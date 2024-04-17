@@ -1,0 +1,32 @@
+
+from instabot import Bot
+
+bot = Bot()
+
+def ig_live_broadcast(welcome):
+    bot.login(username="_itz_sharma_boys_", password="7604836445.as")
+    bot.send_live_message(hello how are you)
+
+if __name__ == '__Ashish sharma__':
+    message = "Hello from IG Live!"
+    ig_live_broadcast(message)
+```
+Replace "_itz_sharma_boys_" and "7604836455.as" with your actual Instagram username and password.
+This script logs in to your Instagram account and sends a live message with the specified text.
+Note: Make sure to install the instabot library by running `pip install instabot` in your terminal.
+Also, be aware that automating Instagram actions may violate their terms of service and could result in account suspension.
+Here's an example of a more advanced script that takes a video file and broadcasts it on IG Live:
+```
+from instabot import Bot
+from instabot.api import API
+
+bot = Bot()
+api = API(bot)
+
+def ig_live_broadcast(video_file):
+    bot.login(username="_itz_sharma_boys_", password="7604836455 as")
+    api.upload_video(video_file, caption="IG Live Broadcast")
+
+if __name__ == '__Ashish sharma__':
+    video_file = "path/to/your/video.mp4"
+    ig_live_broadcast(video_file)
