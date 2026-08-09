@@ -12,8 +12,8 @@ from spotipy.oauth2 import SpotifyClientCredentials
 # =========================
 
 TOKEN = os.getenv("BOT_TOKEN")
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET")
 
 
 # =========================
@@ -144,7 +144,6 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
 
-    # Start Flask server for Render
     flask_thread = threading.Thread(
         target=run_flask,
         daemon=True
@@ -152,10 +151,8 @@ def main():
 
     flask_thread.start()
 
-    # Create Telegram application
     app = Application.builder().token(TOKEN).build()
 
-    # Commands
     app.add_handler(
         CommandHandler("start", start_command)
     )
@@ -171,7 +168,6 @@ def main():
     print("🎵 Resso Music Bot is running...")
     print("🌐 Flask server is running...")
 
-    # Start Telegram bot
     app.run_polling()
 
 
