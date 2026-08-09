@@ -1,13 +1,49 @@
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import os
+import threading
+from flask import Flask
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
+
+
+# =========================
+# ENVIRONMENT VARIABLES
+# =========================
 
 TOKEN = os.getenv("BOT_TOKEN")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
+
+# =========================
+# FLASK SERVER FOR RENDER
+# =========================
+
+flask_app = Flask(__name__)
+
+
+@flask_app.route("/")
+def home():
+    return "🎵 Resso Music Bot is running!"
+
+
+@flask_app.route("/health")
+def health():
+    return "OK"
+
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(
+        host="0.0.0.0",
+        port=port
+    )
+
+
+# =========================
+# SPOTIFY
+# =========================
 
 spotify = spotipy.Spotify(
     auth_manager=SpotifyClientCredentials(
@@ -16,6 +52,10 @@ spotify = spotipy.Spotify(
     )
 )
 
+
+# =========================
+# TELEGRAM COMMANDS
+# =========================
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -39,21 +79,31 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if not context.args:
         await update.message.reply_text(
-            "🎵 Usage:\n/play <song name>\n\n"
-            "Example:\n/play Kesariya"
+            "🎵 Usage:\n"
+            "/play <song name>\n\n"
+            "Example:\n"
+            "/play Kesariya"
         )
         return
 
     song = " ".join(context.args)
 
     await update.message.reply_text(
-        f"🔎 Searching Spotify for:\n🎵 {song}..."
+        f"🔎 Searching Spotify for:\n"
+        f"🎵 {song}\n\n"
+        "⏳ Please wait..."
     )
 
     try:
-        results = spotify.search(q=song, type="track", limit=1)
+        results = spotify.search(
+            q=song,
+            type="track",
+            limit=1
+        )
+
         tracks = results["tracks"]["items"]
 
         if not tracks:
@@ -63,10 +113,14 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         track = tracks[0]
+
         name = track["name"]
+
         artists = ", ".join(
-            artist["name"] for artist in track["artists"]
+            artist["name"]
+            for artist in track["artists"]
         )
+
         url = track["external_urls"]["spotify"]
 
         await update.message.reply_text(
@@ -76,21 +130,48 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     except Exception as e:
+
         print("Spotify Error:", e)
+
         await update.message.reply_text(
             "❌ Spotify search mein error aa gaya."
         )
 
 
+# =========================
+# MAIN
+# =========================
+
 def main():
+
+    # Start Flask server for Render
+    flask_thread = threading.Thread(
+        target=run_flask,
+        daemon=True
+    )
+
+    flask_thread.start()
+
+    # Create Telegram application
     app = Application.builder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("play", play_command))
+    # Commands
+    app.add_handler(
+        CommandHandler("start", start_command)
+    )
 
-    print("🎵 Bot is running...")
+    app.add_handler(
+        CommandHandler("help", help_command)
+    )
 
+    app.add_handler(
+        CommandHandler("play", play_command)
+    )
+
+    print("🎵 Resso Music Bot is running...")
+    print("🌐 Flask server is running...")
+
+    # Start Telegram bot
     app.run_polling()
 
 
