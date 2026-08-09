@@ -1,61 +1,64 @@
 import os
+from threading import Thread
 
+from flask import Flask
 from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     ContextTypes,
-    filters
+    filters,
 )
+
+TOKEN = os.environ["BOT_TOKEN"]
+PORT = int(os.environ.get("PORT", 10000))
+
+# Small web server for Render
+web = Flask(__name__)
+
+@web.route("/")
+def home():
+    return "Telegram bot is running!"
+
+def run_web():
+    web.run(
+        host="0.0.0.0",
+        port=PORT
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Hello!\n\n"
-        "Main tumhara Telegram bot hoon 🤖\n"
-        "Mujhe koi message bhejo!"
+        "👋 Hello!\nMain tumhara Telegram bot hoon 🤖"
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📚 Commands:\n"
-        "/start - Bot start karo\n"
-        "/help - Help dekho"
+        "/start - Start bot\n"
+        "/help - Help"
     )
 
 
-async def message_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    message = update.message.text
-
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"🤖 Tumne kaha:\n{message}"
+        f"🤖 Tumne kaha:\n{update.message.text}"
     )
 
 
 def main():
-    token = os.getenv("BOT_TOKEN")
+    Thread(target=run_web, daemon=True).start()
 
-    if not token:
-        raise ValueError("BOT_TOKEN environment variable missing!")
-
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-
     app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            message_handler
-        )
+        MessageHandler(filters.TEXT & ~filters.COMMAND, echo)
     )
 
-    print("🤖 Bot is running...")
+    print("Bot started!")
 
     app.run_polling()
 
