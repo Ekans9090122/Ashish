@@ -26,20 +26,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def main():
-    app.add_handler(CommandHandler("play", play_command))
-    app = Application.builder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("help", help_command))
-
-    print("🎵 Bot is running...")
-
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
 async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
@@ -54,3 +40,19 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔎 Searching Spotify for:\n🎵 {song}\n\n"
         "⏳ Please wait..."
     )
+
+
+def main():
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("play", play_command))
+
+    print("🎵 Bot is running...")
+
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
