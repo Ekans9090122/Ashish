@@ -27,6 +27,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    app.add_handler(CommandHandler("play", play_command))
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start_command))
