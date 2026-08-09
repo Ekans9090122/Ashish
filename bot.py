@@ -39,3 +39,17 @@ def main():
 
 if __name__ == "__main__":
     main()
+async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "🎵 Usage:\n/play <song name>\n\n"
+            "Example:\n/play Kesariya"
+        )
+        return
+
+    song = " ".join(context.args)
+
+    await update.message.reply_text(
+        f"🔎 Searching Spotify for:\n🎵 {song}\n\n"
+        "⏳ Please wait..."
+    )
