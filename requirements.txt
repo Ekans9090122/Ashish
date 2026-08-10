@@ -1,4 +1,5 @@
 python-telegram-bot==22.8
 Flask
 requests
+spotipy
 yt-dlp[default]
