@@ -12,8 +12,8 @@ from spotipy.oauth2 import SpotifyClientCredentials
 # =========================
 
 TOKEN = os.getenv("BOT_TOKEN")
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET")
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
 
 # =========================
@@ -45,12 +45,16 @@ def run_flask():
 # SPOTIFY
 # =========================
 
-spotify = spotipy.Spotify(
-    auth_manager=SpotifyClientCredentials(
-        client_id=SPOTIFY_CLIENT_ID,
-        client_secret=SPOTIFY_CLIENT_SECRET
+if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
+    print("❌ Spotify credentials are missing!")
+    spotify = None
+else:
+    spotify = spotipy.Spotify(
+        auth_manager=SpotifyClientCredentials(
+            client_id=SPOTIFY_CLIENT_ID,
+            client_secret=SPOTIFY_CLIENT_SECRET
+        )
     )
-)
 
 
 # =========================
@@ -86,6 +90,13 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/play <song name>\n\n"
             "Example:\n"
             "/play Kesariya"
+        )
+        return
+
+    if spotify is None:
+        await update.message.reply_text(
+            "❌ Spotify credentials missing.\n"
+            "Please check Render Environment Variables."
         )
         return
 
@@ -130,7 +141,6 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     except Exception as e:
-
         print("Spotify Error:", e)
 
         await update.message.reply_text(
@@ -144,32 +154,12 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
 
+    # Start Flask server for Render
     flask_thread = threading.Thread(
         target=run_flask,
         daemon=True
     )
-
     flask_thread.start()
 
-    app = Application.builder().token(TOKEN).build()
-
-    app.add_handler(
-        CommandHandler("start", start_command)
-    )
-
-    app.add_handler(
-        CommandHandler("help", help_command)
-    )
-
-    app.add_handler(
-        CommandHandler("play", play_command)
-    )
-
-    print("🎵 Resso Music Bot is running...")
-    print("🌐 Flask server is running...")
-
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+    # Telegram bot
+    app = Application.builder().token(T
