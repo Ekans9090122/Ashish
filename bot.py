@@ -7,7 +7,13 @@ import shutil
 from pathlib import Path
 
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -23,27 +29,45 @@ import yt_dlp
 # ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-PORT = int(os.getenv("PORT", "10000"))
 
-# Render Secret File is READ-ONLY.
-# We copy it to /tmp before yt-dlp uses it.
+PORT = int(
+    os.getenv("PORT", "10000")
+)
+
+# Render Secret File
 COOKIE_SOURCE = os.getenv(
     "YT_COOKIES_FILE",
     "/etc/secrets/youtube_cookies.txt"
 )
 
+# Writable temporary cookie location
 COOKIE_FILE = "/tmp/youtube_cookies.txt"
 
 MAX_QUEUE = 20
 MAX_AUDIO_MB = 45
 
 
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN environment variable is missing.")
+# ============================================================
+# BASIC CHECKS
+# ============================================================
 
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "BOT_TOKEN environment variable is missing."
+    )
+
+
+# ============================================================
+# LOGGING
+# ============================================================
 
 logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    format=(
+        "%(asctime)s | "
+        "%(levelname)s | "
+        "%(name)s | "
+        "%(message)s"
+    ),
     level=logging.INFO,
 )
 
@@ -51,47 +75,35 @@ logger = logging.getLogger("resso")
 
 
 # ============================================================
-# YOUTUBE COOKIE PREPARATION
+# DENO PATH
 # ============================================================
 
-def prepare_cookie_file():
-    """
-    Copy Render's read-only Secret File to a writable /tmp file.
-    The original secret file is never modified.
-    """
+# Render Deno usually installs here.
+DENO_BIN = os.path.expanduser(
+    "~/.deno/bin"
+)
 
-    if not os.path.isfile(COOKIE_SOURCE):
-        logger.warning(
-            "YouTube cookie source not found: %s",
-            COOKIE_SOURCE
-        )
-        return False
+if os.path.isdir(DENO_BIN):
 
-    try:
-        shutil.copyfile(
-            COOKIE_SOURCE,
-            COOKIE_FILE
-        )
+    current_path = os.environ.get(
+        "PATH",
+        ""
+    )
 
-        # Restrict access to the bot process/user.
-        os.chmod(
-            COOKIE_FILE,
-            0o600
+    if DENO_BIN not in current_path.split(
+        os.pathsep
+    ):
+
+        os.environ["PATH"] = (
+            DENO_BIN
+            + os.pathsep
+            + current_path
         )
 
         logger.info(
-            "YouTube cookies copied to: %s",
-            COOKIE_FILE
+            "Deno PATH added: %s",
+            DENO_BIN
         )
-
-        return True
-
-    except Exception as error:
-        logger.exception(
-            "Could not prepare YouTube cookies: %s",
-            error
-        )
-        return False
 
 
 # ============================================================
@@ -103,15 +115,20 @@ flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def home():
-    return "Resso Music Bot is running."
+
+    return (
+        "Resso Music Bot is running."
+    )
 
 
 @flask_app.route("/health")
 def health():
+
     return "OK"
 
 
 def run_flask():
+
     flask_app.run(
         host="0.0.0.0",
         port=PORT,
@@ -121,30 +138,98 @@ def run_flask():
 
 
 # ============================================================
+# COOKIE PREPARATION
+# ============================================================
+
+def prepare_cookie_file():
+
+    """
+    Render Secret File is read-only.
+
+    We copy it to /tmp so yt-dlp can safely read it.
+    """
+
+    if not os.path.isfile(
+        COOKIE_SOURCE
+    ):
+
+        logger.warning(
+            "Cookie source not found: %s",
+            COOKIE_SOURCE
+        )
+
+        return False
+
+
+    try:
+
+        shutil.copyfile(
+            COOKIE_SOURCE,
+            COOKIE_FILE
+        )
+
+
+        try:
+
+            os.chmod(
+                COOKIE_FILE,
+                0o600
+            )
+
+        except Exception:
+
+            pass
+
+
+        logger.info(
+            "YouTube cookies prepared: %s",
+            COOKIE_FILE
+        )
+
+        return True
+
+
+    except Exception as error:
+
+        logger.exception(
+            "Cookie preparation failed: %s",
+            error
+        )
+
+        return False
+
+
+# ============================================================
 # QUEUE STATE
 # ============================================================
 
 queues = {}
+
 playing = set()
+
 locks = {}
 
 
 def get_queue(chat_id):
+
     if chat_id not in queues:
+
         queues[chat_id] = []
 
     return queues[chat_id]
 
 
 def get_lock(chat_id):
+
     if chat_id not in locks:
+
         locks[chat_id] = asyncio.Lock()
 
     return locks[chat_id]
 
 
 # ============================================================
-# BUTTONS
+# BUTTON KEYBOARD
 # ============================================================
 
 def main_keyboard():
@@ -189,14 +274,20 @@ def main_keyboard():
 # START
 # ============================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not update.message:
         return
 
+
     text = (
         "🎵 *Resso Music Bot*\n\n"
-        "YouTube se music search karke audio bhejta hoon.\n\n"
+
+        "YouTube se music search karke "
+        "audio bhejta hoon.\n\n"
 
         "▶️ *Play*\n"
         "`/play Kesariya`\n"
@@ -226,6 +317,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "ℹ️ `/help`"
     )
 
+
     await update.message.reply_text(
         text,
         parse_mode="Markdown",
@@ -237,10 +329,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # HELP
 # ============================================================
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not update.message:
         return
+
 
     text = (
         "🎵 *Resso Music Bot Help*\n\n"
@@ -267,8 +363,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Complete waiting queue clear.\n\n"
 
         "📊 `/status`\n"
-        "Cookie/Deno/FFmpeg status.\n"
+        "Cookie/Deno/FFmpeg status."
     )
+
 
     await update.message.reply_text(
         text,
@@ -283,15 +380,27 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def get_status_text():
 
-    cookie_exists = os.path.isfile(COOKIE_FILE)
+    cookie_exists = os.path.isfile(
+        COOKIE_FILE
+    )
+
+
     cookie_size = (
         os.path.getsize(COOKIE_FILE)
         if cookie_exists
         else 0
     )
 
-    deno = shutil.which("deno")
-    ffmpeg = shutil.which("ffmpeg")
+
+    deno_path = shutil.which(
+        "deno"
+    )
+
+
+    ffmpeg_path = shutil.which(
+        "ffmpeg"
+    )
+
 
     return (
         "📊 *Resso Status*\n\n"
@@ -301,13 +410,14 @@ def get_status_text():
         f"🍪 Cookies: "
         f"{'FOUND' if cookie_exists else 'NOT FOUND'}\n"
 
-        f"📦 Cookie size: {cookie_size:,} bytes\n"
+        f"📦 Cookie size: "
+        f"{cookie_size:,} bytes\n"
 
         f"🦕 Deno: "
-        f"{'FOUND' if deno else 'NOT FOUND'}\n"
+        f"{'FOUND' if deno_path else 'NOT FOUND'}\n"
 
         f"🎬 FFmpeg: "
-        f"{'FOUND' if ffmpeg else 'NOT FOUND'}\n\n"
+        f"{'FOUND' if ffmpeg_path else 'NOT FOUND'}\n\n"
 
         f"📁 Cookie path:\n"
         f"`{COOKIE_FILE}`\n\n"
@@ -325,6 +435,7 @@ async def status_command(
     if not update.message:
         return
 
+
     await update.message.reply_text(
         get_status_text(),
         parse_mode="Markdown",
@@ -336,49 +447,72 @@ async def status_command(
 # YOUTUBE DOWNLOAD
 # ============================================================
 
-def download_youtube_audio(query):
+def download_youtube_audio(
+    query
+):
 
     temp_dir = tempfile.mkdtemp(
         prefix="resso_"
     )
+
 
     output_template = os.path.join(
         temp_dir,
         "%(id)s.%(ext)s"
     )
 
+
+    # ========================================================
+    # YT-DLP OPTIONS
+    # ========================================================
+
     ydl_opts = {
-        "format": (
-            "bestaudio[ext=m4a]/"
-            "bestaudio[ext=webm]/"
-            "bestaudio/"
-            "best"
-        ),
+
+        "format": "bestaudio/best",
 
         "outtmpl": output_template,
 
         "noplaylist": True,
+
         "quiet": True,
+
         "no_warnings": True,
+
         "socket_timeout": 30,
+
         "retries": 3,
+
         "fragment_retries": 3,
+
         "continuedl": False,
+
         "overwrites": True,
+
         "restrictfilenames": True,
+
         "cachedir": False,
+
+        # YouTube JS/EJS support
+        "remote_components": {
+            "ejs": "github"
+        },
     }
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # COOKIES
-    # --------------------------------------------------------
+    # ========================================================
 
-    if os.path.isfile(COOKIE_FILE):
+    if os.path.isfile(
+        COOKIE_FILE
+    ):
 
-        ydl_opts["cookiefile"] = COOKIE_FILE
+        ydl_opts["cookiefile"] = (
+            COOKIE_FILE
+        )
 
         logger.info(
-            "Using writable cookie file: %s",
+            "Using YouTube cookie file: %s",
             COOKIE_FILE
         )
 
@@ -389,10 +523,16 @@ def download_youtube_audio(query):
             COOKIE_FILE
         )
 
+
+    # ========================================================
+    # SEARCH
+    # ========================================================
+
     logger.info(
         "Searching YouTube: %s",
         query
     )
+
 
     try:
 
@@ -405,6 +545,7 @@ def download_youtube_audio(query):
                 download=True,
             )
 
+
     except Exception:
 
         shutil.rmtree(
@@ -413,6 +554,11 @@ def download_youtube_audio(query):
         )
 
         raise
+
+
+    # ========================================================
+    # CHECK RESULT
+    # ========================================================
 
     if not info:
 
@@ -425,7 +571,12 @@ def download_youtube_audio(query):
             "YouTube returned no result."
         )
 
-    entries = info.get("entries") or []
+
+    entries = (
+        info.get("entries")
+        or []
+    )
+
 
     video = next(
         (
@@ -435,6 +586,7 @@ def download_youtube_audio(query):
         ),
         None
     )
+
 
     if not video:
 
@@ -447,34 +599,52 @@ def download_youtube_audio(query):
             "No YouTube result found."
         )
 
+
+    # ========================================================
+    # VIDEO INFO
+    # ========================================================
+
     title = (
         video.get("title")
         or query
     )
 
-    video_id = video.get("id")
+
+    video_id = video.get(
+        "id"
+    )
+
 
     webpage_url = video.get(
         "webpage_url"
     )
 
-    if not webpage_url and video_id:
+
+    if (
+        not webpage_url
+        and video_id
+    ):
 
         webpage_url = (
             "https://www.youtube.com/watch?v="
             + video_id
         )
 
+
     downloaded_file = None
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # FIND DOWNLOADED FILE
-    # --------------------------------------------------------
+    # ========================================================
 
     requested_downloads = (
-        video.get("requested_downloads")
+        video.get(
+            "requested_downloads"
+        )
         or []
     )
+
 
     for item in requested_downloads:
 
@@ -482,17 +652,20 @@ def download_youtube_audio(query):
             "filepath"
         )
 
+
         if (
             filepath
             and os.path.isfile(filepath)
         ):
 
             downloaded_file = filepath
+
             break
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # FALLBACK 1
-    # --------------------------------------------------------
+    # ========================================================
 
     if (
         downloaded_file is None
@@ -505,12 +678,18 @@ def download_youtube_audio(query):
             )
         )
 
+
         matches = [
             p
             for p in matches
-            if p.is_file()
-            and not p.name.endswith(".part")
+            if (
+                p.is_file()
+                and not p.name.endswith(
+                    ".part"
+                )
+            )
         ]
+
 
         if matches:
 
@@ -522,18 +701,26 @@ def download_youtube_audio(query):
                 )
             )
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # FALLBACK 2
-    # --------------------------------------------------------
+    # ========================================================
 
     if downloaded_file is None:
 
         files = [
             p
-            for p in Path(temp_dir).iterdir()
-            if p.is_file()
-            and not p.name.endswith(".part")
+            for p in Path(
+                temp_dir
+            ).iterdir()
+            if (
+                p.is_file()
+                and not p.name.endswith(
+                    ".part"
+                )
+            )
         ]
+
 
         if files:
 
@@ -545,6 +732,11 @@ def download_youtube_audio(query):
                 )
             )
 
+
+    # ========================================================
+    # FILE NOT FOUND
+    # ========================================================
+
     if downloaded_file is None:
 
         shutil.rmtree(
@@ -553,18 +745,22 @@ def download_youtube_audio(query):
         )
 
         raise RuntimeError(
-            "yt-dlp completed but audio file "
-            "was not found."
+            "yt-dlp completed but audio "
+            "file was not found."
         )
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # SIZE CHECK
-    # --------------------------------------------------------
+    # ========================================================
 
     size_mb = (
-        os.path.getsize(downloaded_file)
+        os.path.getsize(
+            downloaded_file
+        )
         / (1024 * 1024)
     )
+
 
     if size_mb > MAX_AUDIO_MB:
 
@@ -578,6 +774,7 @@ def download_youtube_audio(query):
             f"Maximum allowed is "
             f"{MAX_AUDIO_MB} MB."
         )
+
 
     return (
         downloaded_file,
@@ -597,33 +794,53 @@ async def process_queue(
     first_status=None
 ):
 
-    lock = get_lock(chat_id)
+    lock = get_lock(
+        chat_id
+    )
+
 
     async with lock:
 
         if chat_id in playing:
             return
 
-        playing.add(chat_id)
+
+        playing.add(
+            chat_id
+        )
+
 
         try:
 
-            queue = get_queue(chat_id)
+            queue = get_queue(
+                chat_id
+            )
+
 
             while queue:
 
-                query = queue.pop(0)
+                query = queue.pop(
+                    0
+                )
+
 
                 status_message = (
                     first_status
                 )
 
+
                 first_status = None
+
 
                 file_path = None
                 temp_dir = None
 
+
                 try:
+
+                    # =========================================
+                    # STATUS
+                    # =========================================
 
                     if status_message is None:
 
@@ -637,6 +854,11 @@ async def process_queue(
                             )
                         )
 
+
+                    # =========================================
+                    # DOWNLOAD
+                    # =========================================
+
                     (
                         file_path,
                         title,
@@ -647,6 +869,11 @@ async def process_queue(
                         query
                     )
 
+
+                    # =========================================
+                    # UPDATE STATUS
+                    # =========================================
+
                     try:
 
                         await status_message.edit_text(
@@ -656,11 +883,18 @@ async def process_queue(
                         )
 
                     except Exception:
+
                         pass
+
+
+                    # =========================================
+                    # CAPTION
+                    # =========================================
 
                     caption = (
                         f"🎵 {title[:900]}"
                     )
+
 
                     if webpage_url:
 
@@ -669,26 +903,44 @@ async def process_queue(
                             + webpage_url
                         )
 
+
+                    # =========================================
+                    # SEND AUDIO
+                    # =========================================
+
                     with open(
                         file_path,
                         "rb"
                     ) as audio_file:
 
                         await context.bot.send_audio(
+
                             chat_id=chat_id,
+
                             audio=audio_file,
+
                             title=title[:250],
+
                             performer="Resso",
+
                             caption=caption,
+
                             reply_markup=main_keyboard(),
                         )
+
+
+                    # =========================================
+                    # DELETE STATUS
+                    # =========================================
 
                     try:
 
                         await status_message.delete()
 
                     except Exception:
+
                         pass
+
 
                 except Exception as error:
 
@@ -697,34 +949,46 @@ async def process_queue(
                         query
                     )
 
+
                     safe_query = (
-                        query.replace("`", "'")
+                        query
+                        .replace("`", "'")
                     )
+
 
                     error_text = (
                         str(error)
                         .replace("`", "'")
                     )
 
-                    if len(error_text) > 900:
+
+                    if len(
+                        error_text
+                    ) > 900:
 
                         error_text = (
                             error_text[-900:]
                         )
 
+
                     message = (
                         "❌ *YouTube download failed.*\n\n"
+
                         f"🎵 `{safe_query}`\n\n"
+
                         "Possible reasons:\n"
                         "• YouTube cookies expired\n"
                         "• Render IP challenged\n"
                         "• YouTube player changed\n"
                         "• Network error\n"
                         "• Deno/EJS missing\n\n"
+
                         "📊 `/status` se check karo.\n\n"
+
                         "*Technical error:*\n"
                         f"`{error_text}`"
                     )
+
 
                     try:
 
@@ -738,17 +1002,22 @@ async def process_queue(
                     except Exception:
 
                         logger.exception(
-                            "Telegram error message failed."
+                            "Could not send error message."
                         )
+
 
                 finally:
 
                     if status_message:
 
                         try:
+
                             await status_message.delete()
+
                         except Exception:
+
                             pass
+
 
                     if temp_dir:
 
@@ -757,15 +1026,21 @@ async def process_queue(
                             ignore_errors=True
                         )
 
-                await asyncio.sleep(0.5)
+
+                await asyncio.sleep(
+                    0.5
+                )
+
 
         finally:
 
-            playing.discard(chat_id)
+            playing.discard(
+                chat_id
+            )
 
 
 # ============================================================
-# PLAY COMMAND
+# PLAY
 # ============================================================
 
 async def play_command(
@@ -776,9 +1051,11 @@ async def play_command(
     if not update.message:
         return
 
+
     chat_id = (
         update.effective_chat.id
     )
+
 
     if not context.args:
 
@@ -791,10 +1068,14 @@ async def play_command(
 
         return
 
+
     query = (
-        " ".join(context.args)
+        " ".join(
+            context.args
+        )
         .strip()
     )
+
 
     if not query:
 
@@ -804,7 +1085,11 @@ async def play_command(
 
         return
 
-    queue = get_queue(chat_id)
+
+    queue = get_queue(
+        chat_id
+    )
+
 
     if len(queue) >= MAX_QUEUE:
 
@@ -815,7 +1100,11 @@ async def play_command(
 
         return
 
-    queue.append(query)
+
+    queue.append(
+        query
+    )
+
 
     if chat_id in playing:
 
@@ -829,10 +1118,12 @@ async def play_command(
 
         return
 
+
     status = await update.message.reply_text(
         "🔎 Searching YouTube...\n\n"
         f"🎵 {query}"
     )
+
 
     context.application.create_task(
         process_queue(
@@ -855,9 +1146,11 @@ async def queue_command(
     if not update.message:
         return
 
+
     queue = get_queue(
         update.effective_chat.id
     )
+
 
     if not queue:
 
@@ -868,7 +1161,11 @@ async def queue_command(
 
         return
 
-    text = "📋 *Waiting Queue*\n\n"
+
+    text = (
+        "📋 *Waiting Queue*\n\n"
+    )
+
 
     for i, song in enumerate(
         queue,
@@ -878,6 +1175,7 @@ async def queue_command(
         text += (
             f"{i}. {song}\n"
         )
+
 
     await update.message.reply_text(
         text,
@@ -898,11 +1196,16 @@ async def now_command(
     if not update.message:
         return
 
+
     chat_id = (
         update.effective_chat.id
     )
 
-    queue = get_queue(chat_id)
+
+    queue = get_queue(
+        chat_id
+    )
+
 
     if chat_id not in playing:
 
@@ -911,6 +1214,7 @@ async def now_command(
         )
 
         return
+
 
     await update.message.reply_text(
         "🎵 *Currently processing*\n\n"
@@ -921,7 +1225,7 @@ async def now_command(
 
 
 # ============================================================
-# CLEAR / STOP
+# CLEAR
 # ============================================================
 
 async def clear_command(
@@ -932,19 +1236,29 @@ async def clear_command(
     if not update.message:
         return
 
+
     queue = get_queue(
         update.effective_chat.id
     )
 
-    count = len(queue)
+
+    count = len(
+        queue
+    )
+
 
     queue.clear()
+
 
     await update.message.reply_text(
         f"🧹 Cleared {count} song(s).",
         reply_markup=main_keyboard()
     )
 
+
+# ============================================================
+# STOP
+# ============================================================
 
 async def stop_command(
     update: Update,
@@ -954,19 +1268,25 @@ async def stop_command(
     if not update.message:
         return
 
+
     queue = get_queue(
         update.effective_chat.id
     )
 
-    count = len(queue)
+
+    count = len(
+        queue
+    )
+
 
     queue.clear()
+
 
     await update.message.reply_text(
         f"⏹️ Queue stopped.\n"
         f"🧹 Removed {count} waiting song(s).\n\n"
-        "Current download ko forcibly kill nahi "
-        "kiya ja raha hai.",
+        "Current download ko forcibly "
+        "kill nahi kiya ja raha.",
         reply_markup=main_keyboard()
     )
 
@@ -983,6 +1303,7 @@ async def remove_command(
     if not update.message:
         return
 
+
     if (
         not context.args
         or not context.args[0].isdigit()
@@ -994,13 +1315,16 @@ async def remove_command(
 
         return
 
+
     index = int(
         context.args[0]
     )
 
+
     queue = get_queue(
         update.effective_chat.id
     )
+
 
     if (
         index < 1
@@ -1013,9 +1337,11 @@ async def remove_command(
 
         return
 
+
     removed = queue.pop(
         index - 1
     )
+
 
     await update.message.reply_text(
         "❌ Removed:\n"
@@ -1036,13 +1362,18 @@ async def skip_command(
     if not update.message:
         return
 
+
     queue = get_queue(
         update.effective_chat.id
     )
 
+
     if queue:
 
-        skipped = queue.pop(0)
+        skipped = queue.pop(
+            0
+        )
+
 
         await update.message.reply_text(
             "⏭️ Skipped:\n"
@@ -1067,13 +1398,25 @@ async def button_handler(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    query = update.callback_query
+    query = (
+        update.callback_query
+    )
+
 
     await query.answer()
 
-    chat_id = query.message.chat_id
+
+    chat_id = (
+        query.message.chat_id
+    )
+
 
     data = query.data
+
+
+    # ========================================================
+    # HELP
+    # ========================================================
 
     if data == "help":
 
@@ -1089,9 +1432,17 @@ async def button_handler(
             reply_markup=main_keyboard()
         )
 
+
+    # ========================================================
+    # QUEUE
+    # ========================================================
+
     elif data == "queue":
 
-        queue = get_queue(chat_id)
+        queue = get_queue(
+            chat_id
+        )
+
 
         if not queue:
 
@@ -1101,7 +1452,11 @@ async def button_handler(
 
             return
 
-        text = "📋 *Queue*\n\n"
+
+        text = (
+            "📋 *Queue*\n\n"
+        )
+
 
         for i, song in enumerate(
             queue,
@@ -1112,10 +1467,17 @@ async def button_handler(
                 f"{i}. {song}\n"
             )
 
+
         await query.message.reply_text(
             text,
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=main_keyboard()
         )
+
+
+    # ========================================================
+    # NOW
+    # ========================================================
 
     elif data == "now":
 
@@ -1133,21 +1495,52 @@ async def button_handler(
                 "🎵 Nothing is processing."
             )
 
-    elif data in ("stop", "clear"):
 
-        get_queue(chat_id).clear()
+    # ========================================================
+    # STOP / CLEAR
+    # ========================================================
+
+    elif data in (
+        "stop",
+        "clear"
+    ):
+
+        queue = get_queue(
+            chat_id
+        )
+
+
+        count = len(
+            queue
+        )
+
+
+        queue.clear()
+
 
         await query.message.reply_text(
-            "🧹 Queue cleared."
+            f"🧹 Queue cleared.\n"
+            f"Removed: {count}"
         )
+
+
+    # ========================================================
+    # SKIP
+    # ========================================================
 
     elif data == "skip":
 
-        queue = get_queue(chat_id)
+        queue = get_queue(
+            chat_id
+        )
+
 
         if queue:
 
-            skipped = queue.pop(0)
+            skipped = queue.pop(
+                0
+            )
+
 
             await query.message.reply_text(
                 "⏭️ Skipped:\n"
@@ -1161,11 +1554,16 @@ async def button_handler(
             )
 
 
+    # ========================================================
+    # STATUS
+    # ========================================================
+
     elif data == "status":
 
         await query.message.reply_text(
             get_status_text(),
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=main_keyboard()
         )
 
 
@@ -1186,7 +1584,7 @@ async def error_handler(
 
 
 # ============================================================
-# RUN BOT
+# RUN TELEGRAM BOT
 # ============================================================
 
 def run_telegram_bot():
@@ -1195,11 +1593,17 @@ def run_telegram_bot():
         "Starting Telegram bot..."
     )
 
+
     application = (
         Application.builder()
         .token(BOT_TOKEN)
         .build()
     )
+
+
+    # ========================================================
+    # COMMANDS
+    # ========================================================
 
     application.add_handler(
         CommandHandler(
@@ -1208,12 +1612,14 @@ def run_telegram_bot():
         )
     )
 
+
     application.add_handler(
         CommandHandler(
             "help",
             help_command
         )
     )
+
 
     application.add_handler(
         CommandHandler(
@@ -1222,12 +1628,14 @@ def run_telegram_bot():
         )
     )
 
+
     application.add_handler(
         CommandHandler(
             "queue",
             queue_command
         )
     )
+
 
     application.add_handler(
         CommandHandler(
@@ -1236,12 +1644,14 @@ def run_telegram_bot():
         )
     )
 
+
     application.add_handler(
         CommandHandler(
             "stop",
             stop_command
         )
     )
+
 
     application.add_handler(
         CommandHandler(
@@ -1250,12 +1660,14 @@ def run_telegram_bot():
         )
     )
 
+
     application.add_handler(
         CommandHandler(
             "remove",
             remove_command
         )
     )
+
 
     application.add_handler(
         CommandHandler(
@@ -1264,6 +1676,7 @@ def run_telegram_bot():
         )
     )
 
+
     application.add_handler(
         CommandHandler(
             "status",
@@ -1271,19 +1684,31 @@ def run_telegram_bot():
         )
     )
 
+
+    # ========================================================
+    # BUTTONS
+    # ========================================================
+
     application.add_handler(
         CallbackQueryHandler(
             button_handler
         )
     )
 
+
+    # ========================================================
+    # ERROR HANDLER
+    # ========================================================
+
     application.add_error_handler(
         error_handler
     )
 
+
     logger.info(
         "Telegram polling started."
     )
+
 
     application.run_polling(
         drop_pending_updates=True,
@@ -1297,21 +1722,27 @@ def run_telegram_bot():
 
 if __name__ == "__main__":
 
-    # IMPORTANT:
-    # Render Secret File is read-only, so copy it to /tmp first.
+    logger.info(
+        "Preparing YouTube cookies..."
+    )
+
+
     prepare_cookie_file()
+
 
     flask_thread = threading.Thread(
         target=run_flask,
         daemon=True
     )
 
+
     flask_thread.start()
+
 
     logger.info(
         "Flask server started on port %s",
         PORT
     )
 
+
     run_telegram_bot()
-8
