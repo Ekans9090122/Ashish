@@ -167,25 +167,25 @@ def download_youtube_audio(query):
         "%(id)s.%(ext)s",
     )
 
-    ydl_opts = {
-    "format": (
-        "bestaudio[ext=m4a]/"
-        "bestaudio[ext=webm]/"
-        "bestaudio/"
-        "best"
-    ),
-    "outtmpl": output_template,
-    "cookiefile": "/etc/secrets/youtube_cookies.txt",
-    "noplaylist": True,
-    "quiet": True,
-    "no_warnings": True,
-    "default_search": "ytsearch1:",
-    "socket_timeout": 30,
-    "retries": 2,
-    "fragment_retries": 2,
-    "continuedl": False,
-    "overwrites": True,
-    }
+         ydl_opts = {
+        "format": (
+            "bestaudio[ext=m4a]/"
+            "bestaudio[ext=webm]/"
+            "bestaudio/"
+            "best"
+        ),
+        "outtmpl": output_template,
+        "cookiefile": "/etc/secrets/youtube_cookies.txt",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "default_search": "ytsearch1:",
+        "socket_timeout": 30,
+        "retries": 2,
+        "fragment_retries": 2,
+        "continuedl": False,
+        "overwrites": True,
+         }
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
