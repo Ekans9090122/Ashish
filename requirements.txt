@@ -1,3 +1,4 @@
 flask
 python-telegram-bot>=21,<23
 yt-dlp[default]
+yt-dlp-ejs
