@@ -30,17 +30,13 @@ import yt_dlp
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-PORT = int(
-    os.getenv("PORT", "10000")
-)
+PORT = int(os.getenv("PORT", "10000"))
 
-# Render Secret File
 COOKIE_SOURCE = os.getenv(
     "YT_COOKIES_FILE",
     "/etc/secrets/youtube_cookies.txt"
 )
 
-# Writable cookie file
 COOKIE_FILE = "/tmp/youtube_cookies.txt"
 
 MAX_QUEUE = 20
@@ -62,12 +58,7 @@ if not BOT_TOKEN:
 # ============================================================
 
 logging.basicConfig(
-    format=(
-        "%(asctime)s | "
-        "%(levelname)s | "
-        "%(name)s | "
-        "%(message)s"
-    ),
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
 )
 
@@ -75,34 +66,60 @@ logger = logging.getLogger("resso")
 
 
 # ============================================================
-# DENO PATH
+# DENO SETUP
 # ============================================================
 
-DENO_BIN = os.path.expanduser(
-    "~/.deno/bin"
-)
+BASE_DIR = Path(__file__).resolve().parent
 
-current_path = os.environ.get(
-    "PATH",
-    ""
-)
+PROJECT_DENO_BIN = BASE_DIR / ".deno" / "bin"
+HOME_DENO_BIN = Path.home() / ".deno" / "bin"
 
-if os.path.isdir(DENO_BIN):
+current_path = os.environ.get("PATH", "")
 
-    if DENO_BIN not in current_path.split(
-        os.pathsep
-    ):
+# Prefer project Deno
+if PROJECT_DENO_BIN.is_dir():
+    os.environ["PATH"] = (
+        str(PROJECT_DENO_BIN)
+        + os.pathsep
+        + current_path
+    )
 
-        os.environ["PATH"] = (
-            DENO_BIN
-            + os.pathsep
-            + current_path
-        )
+# Also allow Home Deno
+elif HOME_DENO_BIN.is_dir():
+    os.environ["PATH"] = (
+        str(HOME_DENO_BIN)
+        + os.pathsep
+        + current_path
+    )
+
+logger.info("Project Deno directory: %s", PROJECT_DENO_BIN)
+logger.info("Home Deno directory: %s", HOME_DENO_BIN)
+
+DENO_PATH = shutil.which("deno")
+
+if DENO_PATH:
+    logger.info("Deno FOUND: %s", DENO_PATH)
+
+    try:
+        deno_version = os.popen(
+            f'"{DENO_PATH}" --version'
+        ).read().strip()
 
         logger.info(
-            "Deno PATH added: %s",
-            DENO_BIN
+            "Deno version: %s",
+            deno_version
         )
+
+    except Exception as error:
+        logger.warning(
+            "Could not read Deno version: %s",
+            error
+        )
+
+else:
+    logger.warning(
+        "Deno NOT FOUND."
+    )
 
 
 # ============================================================
@@ -114,18 +131,15 @@ flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def home():
-
     return "Resso Music Bot is running."
 
 
 @flask_app.route("/health")
 def health():
-
     return "OK"
 
 
 def run_flask():
-
     flask_app.run(
         host="0.0.0.0",
         port=PORT,
@@ -140,9 +154,7 @@ def run_flask():
 
 def prepare_cookie_file():
 
-    if not os.path.isfile(
-        COOKIE_SOURCE
-    ):
+    if not os.path.isfile(COOKIE_SOURCE):
 
         logger.warning(
             "Cookie source not found: %s",
@@ -150,7 +162,6 @@ def prepare_cookie_file():
         )
 
         return False
-
 
     try:
 
@@ -160,16 +171,12 @@ def prepare_cookie_file():
         )
 
         try:
-
             os.chmod(
                 COOKIE_FILE,
                 0o600
             )
-
         except Exception:
-
             pass
-
 
         logger.info(
             "YouTube cookies prepared: %s",
@@ -177,7 +184,6 @@ def prepare_cookie_file():
         )
 
         return True
-
 
     except Exception as error:
 
@@ -194,16 +200,13 @@ def prepare_cookie_file():
 # ============================================================
 
 queues = {}
-
 playing = set()
-
 locks = {}
 
 
 def get_queue(chat_id):
 
     if chat_id not in queues:
-
         queues[chat_id] = []
 
     return queues[chat_id]
@@ -212,7 +215,6 @@ def get_queue(chat_id):
 def get_lock(chat_id):
 
     if chat_id not in locks:
-
         locks[chat_id] = asyncio.Lock()
 
     return locks[chat_id]
@@ -274,9 +276,7 @@ async def start(
 
     text = (
         "🎵 *Resso Music Bot*\n\n"
-
-        "YouTube se music search karke "
-        "audio bhejta hoon.\n\n"
+        "YouTube se music search karke audio bhejta hoon.\n\n"
 
         "▶️ *Play*\n"
         "`/play Kesariya`\n"
@@ -376,13 +376,9 @@ def get_status_text():
         else 0
     )
 
-    deno_path = shutil.which(
-        "deno"
-    )
+    deno_path = shutil.which("deno")
 
-    ffmpeg_path = shutil.which(
-        "ffmpeg"
-    )
+    ffmpeg_path = shutil.which("ffmpeg")
 
     return (
         "📊 *Resso Status*\n\n"
@@ -439,19 +435,37 @@ def download_youtube_audio(query):
         "%(id)s.%(ext)s"
     )
 
-    # ========================================================
+    # --------------------------------------------------------
+    # DENO
+    # --------------------------------------------------------
+
+    deno_path = shutil.which("deno")
+
+    if not deno_path:
+
+        possible_paths = [
+            PROJECT_DENO_BIN / "deno",
+            HOME_DENO_BIN / "deno",
+        ]
+
+        for path in possible_paths:
+
+            if path.is_file():
+                deno_path = str(path)
+                break
+
+    logger.info(
+        "Download Deno path: %s",
+        deno_path
+    )
+
+    # --------------------------------------------------------
     # YT-DLP OPTIONS
-    # ========================================================
+    # --------------------------------------------------------
 
     ydl_opts = {
 
-        # IMPORTANT:
-        # Avoid forcing m4a/webm because some videos
-        # may not expose those exact formats.
-        "format": (
-            "bestaudio/"
-            "best"
-        ),
+        "format": "bestaudio/best",
 
         "outtmpl": output_template,
 
@@ -459,7 +473,7 @@ def download_youtube_audio(query):
 
         "quiet": True,
 
-        "no_warnings": True,
+        "no_warnings": False,
 
         "socket_timeout": 30,
 
@@ -475,20 +489,15 @@ def download_youtube_audio(query):
 
         "cachedir": False,
 
-        # Enable yt-dlp EJS remote components.
+        # yt-dlp EJS remote components
         "remote_components": {
             "ejs": "github"
         },
     }
 
-
-    # ========================================================
-    # DENO
-    # ========================================================
-
-    deno_path = shutil.which(
-        "deno"
-    )
+    # --------------------------------------------------------
+    # JAVASCRIPT RUNTIME
+    # --------------------------------------------------------
 
     if deno_path:
 
@@ -499,28 +508,23 @@ def download_youtube_audio(query):
         }
 
         logger.info(
-            "Using Deno: %s",
+            "Using Deno runtime: %s",
             deno_path
         )
 
     else:
 
         logger.warning(
-            "Deno not found."
+            "Deno unavailable. Continuing without Deno."
         )
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # COOKIES
-    # ========================================================
+    # --------------------------------------------------------
 
-    if os.path.isfile(
-        COOKIE_FILE
-    ):
+    if os.path.isfile(COOKIE_FILE):
 
-        ydl_opts["cookiefile"] = (
-            COOKIE_FILE
-        )
+        ydl_opts["cookiefile"] = COOKIE_FILE
 
         logger.info(
             "Using YouTube cookie file: %s",
@@ -534,16 +538,14 @@ def download_youtube_audio(query):
             COOKIE_FILE
         )
 
-
-    # ========================================================
-    # SEARCH
-    # ========================================================
+    # --------------------------------------------------------
+    # SEARCH + DOWNLOAD
+    # --------------------------------------------------------
 
     logger.info(
         "Searching YouTube: %s",
         query
     )
-
 
     try:
 
@@ -565,10 +567,9 @@ def download_youtube_audio(query):
 
         raise
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # RESULT CHECK
-    # ========================================================
+    # --------------------------------------------------------
 
     if not info:
 
@@ -581,12 +582,7 @@ def download_youtube_audio(query):
             "YouTube returned no result."
         )
 
-
-    entries = (
-        info.get("entries")
-        or []
-    )
-
+    entries = info.get("entries") or []
 
     video = next(
         (
@@ -596,7 +592,6 @@ def download_youtube_audio(query):
         ),
         None
     )
-
 
     if not video:
 
@@ -609,15 +604,13 @@ def download_youtube_audio(query):
             "No YouTube result found."
         )
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # VIDEO INFO
-    # ========================================================
+    # --------------------------------------------------------
 
-    title = (
-        video.get("title")
-        or query
-    )
+    title = video.get(
+        "title"
+    ) or query
 
     video_id = video.get(
         "id"
@@ -627,32 +620,24 @@ def download_youtube_audio(query):
         "webpage_url"
     )
 
-
-    if (
-        not webpage_url
-        and video_id
-    ):
+    if not webpage_url and video_id:
 
         webpage_url = (
             "https://www.youtube.com/watch?v="
             + video_id
         )
 
-
     downloaded_file = None
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # FIND DOWNLOADED FILE
-    # ========================================================
+    # --------------------------------------------------------
 
     requested_downloads = (
         video.get(
             "requested_downloads"
-        )
-        or []
+        ) or []
     )
-
 
     for item in requested_downloads:
 
@@ -660,25 +645,19 @@ def download_youtube_audio(query):
             "filepath"
         )
 
-
         if (
             filepath
             and os.path.isfile(filepath)
         ):
 
             downloaded_file = filepath
-
             break
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # FALLBACK 1
-    # ========================================================
+    # --------------------------------------------------------
 
-    if (
-        downloaded_file is None
-        and video_id
-    ):
+    if downloaded_file is None and video_id:
 
         matches = list(
             Path(temp_dir).glob(
@@ -686,18 +665,14 @@ def download_youtube_audio(query):
             )
         )
 
-
         matches = [
             p
             for p in matches
             if (
                 p.is_file()
-                and not p.name.endswith(
-                    ".part"
-                )
+                and not p.name.endswith(".part")
             )
         ]
-
 
         if matches:
 
@@ -709,10 +684,9 @@ def download_youtube_audio(query):
                 )
             )
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # FALLBACK 2
-    # ========================================================
+    # --------------------------------------------------------
 
     if downloaded_file is None:
 
@@ -723,12 +697,9 @@ def download_youtube_audio(query):
             ).iterdir()
             if (
                 p.is_file()
-                and not p.name.endswith(
-                    ".part"
-                )
+                and not p.name.endswith(".part")
             )
         ]
-
 
         if files:
 
@@ -740,10 +711,9 @@ def download_youtube_audio(query):
                 )
             )
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # FILE CHECK
-    # ========================================================
+    # --------------------------------------------------------
 
     if downloaded_file is None:
 
@@ -753,14 +723,12 @@ def download_youtube_audio(query):
         )
 
         raise RuntimeError(
-            "yt-dlp completed but audio "
-            "file was not found."
+            "yt-dlp completed but audio file was not found."
         )
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # SIZE CHECK
-    # ========================================================
+    # --------------------------------------------------------
 
     size_mb = (
         os.path.getsize(
@@ -768,7 +736,6 @@ def download_youtube_audio(query):
         )
         / (1024 * 1024)
     )
-
 
     if size_mb > MAX_AUDIO_MB:
 
@@ -779,10 +746,8 @@ def download_youtube_audio(query):
 
         raise RuntimeError(
             f"Audio is {size_mb:.1f} MB. "
-            f"Maximum allowed is "
-            f"{MAX_AUDIO_MB} MB."
+            f"Maximum allowed is {MAX_AUDIO_MB} MB."
         )
-
 
     return (
         downloaded_file,
@@ -802,53 +767,30 @@ async def process_queue(
     first_status=None
 ):
 
-    lock = get_lock(
-        chat_id
-    )
-
+    lock = get_lock(chat_id)
 
     async with lock:
 
         if chat_id in playing:
-
             return
 
-
-        playing.add(
-            chat_id
-        )
-
+        playing.add(chat_id)
 
         try:
 
-            queue = get_queue(
-                chat_id
-            )
-
+            queue = get_queue(chat_id)
 
             while queue:
 
-                query = queue.pop(
-                    0
-                )
+                query = queue.pop(0)
 
-
-                status_message = (
-                    first_status
-                )
-
+                status_message = first_status
                 first_status = None
-
 
                 file_path = None
                 temp_dir = None
 
-
                 try:
-
-                    # ========================================
-                    # STATUS
-                    # ========================================
 
                     if status_message is None:
 
@@ -862,10 +804,9 @@ async def process_queue(
                             )
                         )
 
-
-                    # ========================================
+                    # ------------------------------------------------
                     # DOWNLOAD
-                    # ========================================
+                    # ------------------------------------------------
 
                     (
                         file_path,
@@ -877,10 +818,9 @@ async def process_queue(
                         query
                     )
 
-
-                    # ========================================
+                    # ------------------------------------------------
                     # UPDATE STATUS
-                    # ========================================
+                    # ------------------------------------------------
 
                     try:
 
@@ -891,18 +831,13 @@ async def process_queue(
                         )
 
                     except Exception:
-
                         pass
 
-
-                    # ========================================
+                    # ------------------------------------------------
                     # CAPTION
-                    # ========================================
+                    # ------------------------------------------------
 
-                    caption = (
-                        f"🎵 {title[:900]}"
-                    )
-
+                    caption = f"🎵 {title[:900]}"
 
                     if webpage_url:
 
@@ -911,10 +846,9 @@ async def process_queue(
                             + webpage_url
                         )
 
-
-                    # ========================================
+                    # ------------------------------------------------
                     # SEND AUDIO
-                    # ========================================
+                    # ------------------------------------------------
 
                     with open(
                         file_path,
@@ -922,20 +856,13 @@ async def process_queue(
                     ) as audio_file:
 
                         await context.bot.send_audio(
-
                             chat_id=chat_id,
-
                             audio=audio_file,
-
                             title=title[:250],
-
                             performer="Resso",
-
                             caption=caption,
-
                             reply_markup=main_keyboard(),
                         )
-
 
                 except Exception as error:
 
@@ -944,27 +871,20 @@ async def process_queue(
                         query
                     )
 
-
                     safe_query = (
-                        query
-                        .replace("`", "'")
+                        query.replace("`", "'")
                     )
-
 
                     error_text = (
                         str(error)
                         .replace("`", "'")
                     )
 
-
-                    if len(
-                        error_text
-                    ) > 900:
+                    if len(error_text) > 900:
 
                         error_text = (
                             error_text[-900:]
                         )
-
 
                     message = (
                         "❌ *YouTube download failed.*\n\n"
@@ -984,7 +904,6 @@ async def process_queue(
                         f"`{error_text}`"
                     )
 
-
                     try:
 
                         await context.bot.send_message(
@@ -1000,19 +919,14 @@ async def process_queue(
                             "Could not send error message."
                         )
 
-
                 finally:
 
                     if status_message:
 
                         try:
-
                             await status_message.delete()
-
                         except Exception:
-
                             pass
-
 
                     if temp_dir:
 
@@ -1021,17 +935,11 @@ async def process_queue(
                             ignore_errors=True
                         )
 
-
-                await asyncio.sleep(
-                    0.5
-                )
-
+                await asyncio.sleep(0.5)
 
         finally:
 
-            playing.discard(
-                chat_id
-            )
+            playing.discard(chat_id)
 
 
 # ============================================================
@@ -1046,11 +954,7 @@ async def play_command(
     if not update.message:
         return
 
-
-    chat_id = (
-        update.effective_chat.id
-    )
-
+    chat_id = update.effective_chat.id
 
     if not context.args:
 
@@ -1063,14 +967,12 @@ async def play_command(
 
         return
 
-
     query = (
         " ".join(
             context.args
         )
         .strip()
     )
-
 
     if not query:
 
@@ -1080,11 +982,7 @@ async def play_command(
 
         return
 
-
-    queue = get_queue(
-        chat_id
-    )
-
+    queue = get_queue(chat_id)
 
     if len(queue) >= MAX_QUEUE:
 
@@ -1095,11 +993,7 @@ async def play_command(
 
         return
 
-
-    queue.append(
-        query
-    )
-
+    queue.append(query)
 
     if chat_id in playing:
 
@@ -1113,12 +1007,10 @@ async def play_command(
 
         return
 
-
     status = await update.message.reply_text(
         "🔎 Searching YouTube...\n\n"
         f"🎵 {query}"
     )
-
 
     context.application.create_task(
         process_queue(
@@ -1130,7 +1022,7 @@ async def play_command(
 
 
 # ============================================================
-# QUEUE COMMAND
+# QUEUE
 # ============================================================
 
 async def queue_command(
@@ -1141,11 +1033,9 @@ async def queue_command(
     if not update.message:
         return
 
-
     queue = get_queue(
         update.effective_chat.id
     )
-
 
     if not queue:
 
@@ -1156,21 +1046,14 @@ async def queue_command(
 
         return
 
-
-    text = (
-        "📋 *Waiting Queue*\n\n"
-    )
-
+    text = "📋 *Waiting Queue*\n\n"
 
     for i, song in enumerate(
         queue,
         start=1
     ):
 
-        text += (
-            f"{i}. {song}\n"
-        )
-
+        text += f"{i}. {song}\n"
 
     await update.message.reply_text(
         text,
@@ -1191,16 +1074,9 @@ async def now_command(
     if not update.message:
         return
 
+    chat_id = update.effective_chat.id
 
-    chat_id = (
-        update.effective_chat.id
-    )
-
-
-    queue = get_queue(
-        chat_id
-    )
-
+    queue = get_queue(chat_id)
 
     if chat_id not in playing:
 
@@ -1209,7 +1085,6 @@ async def now_command(
         )
 
         return
-
 
     await update.message.reply_text(
         "🎵 *Currently processing*\n\n"
@@ -1231,19 +1106,13 @@ async def clear_command(
     if not update.message:
         return
 
-
     queue = get_queue(
         update.effective_chat.id
     )
 
-
-    count = len(
-        queue
-    )
-
+    count = len(queue)
 
     queue.clear()
-
 
     await update.message.reply_text(
         f"🧹 Cleared {count} song(s).",
@@ -1263,25 +1132,18 @@ async def stop_command(
     if not update.message:
         return
 
-
     queue = get_queue(
         update.effective_chat.id
     )
 
-
-    count = len(
-        queue
-    )
-
+    count = len(queue)
 
     queue.clear()
-
 
     await update.message.reply_text(
         f"⏹️ Queue stopped.\n"
         f"🧹 Removed {count} waiting song(s).\n\n"
-        "Current download ko forcibly "
-        "kill nahi kiya ja raha.",
+        "Current download ko forcibly kill nahi kiya ja raha.",
         reply_markup=main_keyboard()
     )
 
@@ -1298,7 +1160,6 @@ async def remove_command(
     if not update.message:
         return
 
-
     if (
         not context.args
         or not context.args[0].isdigit()
@@ -1310,16 +1171,13 @@ async def remove_command(
 
         return
 
-
     index = int(
         context.args[0]
     )
 
-
     queue = get_queue(
         update.effective_chat.id
     )
-
 
     if (
         index < 1
@@ -1332,11 +1190,9 @@ async def remove_command(
 
         return
 
-
     removed = queue.pop(
         index - 1
     )
-
 
     await update.message.reply_text(
         "❌ Removed:\n"
@@ -1357,18 +1213,13 @@ async def skip_command(
     if not update.message:
         return
 
-
     queue = get_queue(
         update.effective_chat.id
     )
 
-
     if queue:
 
-        skipped = queue.pop(
-            0
-        )
-
+        skipped = queue.pop(0)
 
         await update.message.reply_text(
             "⏭️ Skipped:\n"
@@ -1393,21 +1244,13 @@ async def button_handler(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    query = (
-        update.callback_query
-    )
-
+    query = update.callback_query
 
     await query.answer()
 
-
-    chat_id = (
-        query.message.chat_id
-    )
-
+    chat_id = query.message.chat_id
 
     data = query.data
-
 
     if data == "help":
 
@@ -1423,13 +1266,9 @@ async def button_handler(
             reply_markup=main_keyboard()
         )
 
-
     elif data == "queue":
 
-        queue = get_queue(
-            chat_id
-        )
-
+        queue = get_queue(chat_id)
 
         if not queue:
 
@@ -1439,28 +1278,20 @@ async def button_handler(
 
             return
 
-
-        text = (
-            "📋 *Queue*\n\n"
-        )
-
+        text = "📋 *Queue*\n\n"
 
         for i, song in enumerate(
             queue,
             start=1
         ):
 
-            text += (
-                f"{i}. {song}\n"
-            )
-
+            text += f"{i}. {song}\n"
 
         await query.message.reply_text(
             text,
             parse_mode="Markdown",
             reply_markup=main_keyboard()
         )
-
 
     elif data == "now":
 
@@ -1478,44 +1309,26 @@ async def button_handler(
                 "🎵 Nothing is processing."
             )
 
+    elif data in ("stop", "clear"):
 
-    elif data in (
-        "stop",
-        "clear"
-    ):
+        queue = get_queue(chat_id)
 
-        queue = get_queue(
-            chat_id
-        )
-
-
-        count = len(
-            queue
-        )
-
+        count = len(queue)
 
         queue.clear()
-
 
         await query.message.reply_text(
             f"🧹 Queue cleared.\n"
             f"Removed: {count}"
         )
 
-
     elif data == "skip":
 
-        queue = get_queue(
-            chat_id
-        )
-
+        queue = get_queue(chat_id)
 
         if queue:
 
-            skipped = queue.pop(
-                0
-            )
-
+            skipped = queue.pop(0)
 
             await query.message.reply_text(
                 "⏭️ Skipped:\n"
@@ -1527,7 +1340,6 @@ async def button_handler(
             await query.message.reply_text(
                 "📋 Queue empty."
             )
-
 
     elif data == "status":
 
@@ -1555,7 +1367,7 @@ async def error_handler(
 
 
 # ============================================================
-# RUN TELEGRAM BOT
+# TELEGRAM BOT
 # ============================================================
 
 def run_telegram_bot():
@@ -1564,17 +1376,13 @@ def run_telegram_bot():
         "Starting Telegram bot..."
     )
 
-
     application = (
         Application.builder()
         .token(BOT_TOKEN)
         .build()
     )
 
-
-    # ========================================================
-    # COMMANDS
-    # ========================================================
+    # Commands
 
     application.add_handler(
         CommandHandler(
@@ -1583,14 +1391,12 @@ def run_telegram_bot():
         )
     )
 
-
     application.add_handler(
         CommandHandler(
             "help",
             help_command
         )
     )
-
 
     application.add_handler(
         CommandHandler(
@@ -1599,14 +1405,12 @@ def run_telegram_bot():
         )
     )
 
-
     application.add_handler(
         CommandHandler(
             "queue",
             queue_command
         )
     )
-
 
     application.add_handler(
         CommandHandler(
@@ -1615,14 +1419,12 @@ def run_telegram_bot():
         )
     )
 
-
     application.add_handler(
         CommandHandler(
             "stop",
             stop_command
         )
     )
-
 
     application.add_handler(
         CommandHandler(
@@ -1631,14 +1433,12 @@ def run_telegram_bot():
         )
     )
 
-
     application.add_handler(
         CommandHandler(
             "remove",
             remove_command
         )
     )
-
 
     application.add_handler(
         CommandHandler(
@@ -1647,7 +1447,6 @@ def run_telegram_bot():
         )
     )
 
-
     application.add_handler(
         CommandHandler(
             "status",
@@ -1655,10 +1454,7 @@ def run_telegram_bot():
         )
     )
 
-
-    # ========================================================
-    # BUTTONS
-    # ========================================================
+    # Buttons
 
     application.add_handler(
         CallbackQueryHandler(
@@ -1666,20 +1462,15 @@ def run_telegram_bot():
         )
     )
 
-
-    # ========================================================
-    # ERROR HANDLER
-    # ========================================================
+    # Error handler
 
     application.add_error_handler(
         error_handler
     )
 
-
     logger.info(
         "Telegram polling started."
     )
-
 
     application.run_polling(
         drop_pending_updates=True,
@@ -1699,7 +1490,6 @@ if __name__ == "__main__":
 
     prepare_cookie_file()
 
-
     flask_thread = threading.Thread(
         target=run_flask,
         daemon=True
@@ -1707,11 +1497,9 @@ if __name__ == "__main__":
 
     flask_thread.start()
 
-
     logger.info(
         "Flask server started on port %s",
         PORT
     )
-
 
     run_telegram_bot()
