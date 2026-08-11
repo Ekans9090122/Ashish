@@ -1,6 +1,8 @@
 services:
   - type: web
-    name: my-telegram-bot
+    name: resso-bot
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    plan: free
+    buildCommand: pip install -r requirements.txt && curl -fsSL https://deno.land/install.sh | sh
     startCommand: python bot.py
+    healthCheckPath: /health
