@@ -15,6 +15,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -33,21 +34,33 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 
 PORT = int(os.environ.get("PORT", "10000"))
 
-# Render automatically provides this for web services.
-RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
+RENDER_URL = os.environ.get(
+    "RENDER_EXTERNAL_URL",
+    ""
+).strip()
 
-# Optional custom webhook secret.
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "").strip()
+WEBHOOK_SECRET = os.environ.get(
+    "WEBHOOK_SECRET",
+    ""
+).strip()
 
-# Telegram upload safety target.
+
+# Telegram safety target
 TARGET_MB = 40
 MAX_MB = 45
 
 TARGET_BYTES = TARGET_MB * 1024 * 1024
 MAX_BYTES = MAX_MB * 1024 * 1024
 
-COOKIE_SECRET_PATH = Path("/etc/secrets/youtube_cookies.txt")
-COOKIE_TEMP_PATH = Path("/tmp/youtube_cookies.txt")
+
+# Render Secret File
+COOKIE_SECRET_PATH = Path(
+    "/etc/secrets/youtube_cookies.txt"
+)
+
+COOKIE_TEMP_PATH = Path(
+    "/tmp/youtube_cookies.txt"
+)
 
 
 # =========================================================
@@ -55,8 +68,13 @@ COOKIE_TEMP_PATH = Path("/tmp/youtube_cookies.txt")
 # =========================================================
 
 logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
+    format=(
+        "%(asctime)s | "
+        "%(levelname)s | "
+        "%(name)s | "
+        "%(message)s"
+    ),
 )
 
 logger = logging.getLogger("Resso")
@@ -76,18 +94,21 @@ def home():
 
 @flask_app.route("/health", methods=["GET"])
 def health():
+
     return jsonify(
         {
             "status": "ok",
             "bot": "Resso",
             "ffmpeg": shutil.which("ffmpeg") is not None,
+            "ffprobe": shutil.which("ffprobe") is not None,
+            "deno": shutil.which("deno") is not None,
             "yt_dlp": True,
         }
     )
 
 
 # =========================================================
-# GLOBAL BOT STATE
+# GLOBAL STATE
 # =========================================================
 
 application = None
@@ -95,7 +116,8 @@ bot_loop = None
 
 queues = defaultdict(deque)
 current_tasks = {}
-chat_locks = defaultdict(asyncio.Lock)
+
+chat_locks = {}
 
 
 # =========================================================
@@ -103,33 +125,33 @@ chat_locks = defaultdict(asyncio.Lock)
 # =========================================================
 
 def prepare_cookies():
-    """
-    Render Secret File:
-    /etc/secrets/youtube_cookies.txt
-
-    We copy it to /tmp so yt-dlp can use it safely.
-    """
 
     try:
+
         if COOKIE_SECRET_PATH.exists():
+
             shutil.copy2(
                 COOKIE_SECRET_PATH,
                 COOKIE_TEMP_PATH,
             )
 
             logger.info(
-                "YouTube cookies loaded from Render Secret File."
+                "YouTube cookies loaded."
             )
 
             return str(COOKIE_TEMP_PATH)
 
         logger.warning(
-            "YouTube cookies not found at %s",
+            "YouTube cookies NOT found: %s",
             COOKIE_SECRET_PATH,
         )
 
     except Exception as e:
-        logger.exception("Cookie setup failed: %s", e)
+
+        logger.exception(
+            "Cookie setup failed: %s",
+            e,
+        )
 
     return None
 
@@ -139,15 +161,22 @@ def prepare_cookies():
 # =========================================================
 
 def ffmpeg_available():
+
     return shutil.which("ffmpeg") is not None
 
 
+def ffprobe_available():
+
+    return shutil.which("ffprobe") is not None
+
+
 def get_duration(file_path):
-    """
-    Get audio duration using ffprobe.
-    """
+
+    if not ffprobe_available():
+        return 0.0
 
     try:
+
         result = subprocess.run(
             [
                 "ffprobe",
@@ -171,75 +200,93 @@ def get_duration(file_path):
             return float(value)
 
     except Exception as e:
-        logger.warning("Duration detection failed: %s", e)
+
+        logger.warning(
+            "Duration detection failed: %s",
+            e,
+        )
 
     return 0.0
 
 
 def calculate_bitrate(duration):
-    """
-    Calculate an MP3 bitrate which should keep the output
-    comfortably below 40 MB.
-
-    We intentionally target ~39 MB instead of 40 MB.
-    """
 
     if duration <= 0:
+
         return 128
 
+    # Target around 39 MB
     safe_bytes = 39 * 1024 * 1024
 
-    # bits/sec -> kbps
     bitrate = int(
-        (safe_bytes * 8) / duration / 1000
+        (safe_bytes * 8)
+        / duration
+        / 1000
     )
 
-    # Keep reasonable audio quality while respecting size.
-    bitrate = min(bitrate, 192)
-    bitrate = max(bitrate, 32)
+    bitrate = min(
+        bitrate,
+        192,
+    )
+
+    bitrate = max(
+        bitrate,
+        32,
+    )
 
     return bitrate
 
 
 def compress_audio(input_file):
-    """
-    Convert audio to MP3 and keep it below the target.
-    Returns compressed file path.
-    """
 
     input_file = Path(input_file)
 
     original_size = input_file.stat().st_size
 
     logger.info(
-        "Original audio size: %.2f MB",
+        "Original audio: %.2f MB",
         original_size / 1024 / 1024,
     )
 
-    # Already safely below target.
+    # Already small enough
     if original_size <= TARGET_BYTES:
-        logger.info("Audio already below target. No compression needed.")
+
+        logger.info(
+            "Audio already below 40 MB."
+        )
+
         return input_file
 
     if not ffmpeg_available():
-        raise RuntimeError("FFmpeg is not installed.")
 
-    duration = get_duration(input_file)
+        raise RuntimeError(
+            "FFmpeg is not installed."
+        )
 
-    bitrate = calculate_bitrate(duration)
+    duration = get_duration(
+        input_file
+    )
+
+    bitrate = calculate_bitrate(
+        duration
+    )
 
     logger.info(
-        "Audio duration: %.2f seconds | Initial bitrate: %s kbps",
+        "Duration: %.2f sec | "
+        "Starting bitrate: %s kbps",
         duration,
         bitrate,
     )
 
     output_file = input_file.with_name(
-        input_file.stem + "_compressed.mp3"
+        input_file.stem
+        + "_compressed.mp3"
     )
 
     def run_ffmpeg(kbps):
+
         if output_file.exists():
+
             try:
                 output_file.unlink()
             except Exception:
@@ -250,22 +297,29 @@ def compress_audio(input_file):
             "-y",
             "-i",
             str(input_file),
+
             "-vn",
+
             "-ac",
             "2",
+
             "-ar",
             "44100",
+
             "-codec:a",
             "libmp3lame",
+
             "-b:a",
             f"{kbps}k",
+
             "-map_metadata",
             "-1",
+
             str(output_file),
         ]
 
         logger.info(
-            "Running FFmpeg at %s kbps",
+            "FFmpeg compression: %s kbps",
             kbps,
         )
 
@@ -278,22 +332,24 @@ def compress_audio(input_file):
         )
 
         if result.returncode != 0:
+
             logger.error(
-                "FFmpeg error: %s",
-                result.stderr[-3000:],
+                "FFmpeg error:\n%s",
+                result.stderr[-5000:],
             )
+
             raise RuntimeError(
                 "FFmpeg compression failed."
             )
 
-        return output_file
-
-    # Try progressively lower bitrates if needed.
     attempts = [
         bitrate,
-        min(bitrate, 128),
-        min(bitrate, 96),
-        min(bitrate, 64),
+        160,
+        128,
+        112,
+        96,
+        80,
+        64,
         48,
         40,
         32,
@@ -316,15 +372,15 @@ def compress_audio(input_file):
         size = output_file.stat().st_size
 
         logger.info(
-            "Compressed size at %s kbps: %.2f MB",
+            "Compressed at %s kbps: %.2f MB",
             kbps,
             size / 1024 / 1024,
         )
 
         if size <= TARGET_BYTES:
+
             logger.info(
-                "Compression successful: %.2f MB",
-                size / 1024 / 1024,
+                "Compression successful."
             )
 
             try:
@@ -334,14 +390,16 @@ def compress_audio(input_file):
 
             return output_file
 
-    # Last check.
+    # Final safety check
     if output_file.exists():
 
         size = output_file.stat().st_size
 
         if size <= MAX_BYTES:
+
             logger.warning(
-                "File is under Telegram maximum but above target: %.2f MB",
+                "Final file %.2f MB "
+                "is below 45 MB but above target.",
                 size / 1024 / 1024,
             )
 
@@ -362,6 +420,7 @@ def compress_audio(input_file):
 # =========================================================
 
 def main_keyboard():
+
     return InlineKeyboardMarkup(
         [
             [
@@ -407,7 +466,8 @@ HELP_TEXT = """
 
 Commands:
 
-/play <YouTube URL or search>
+/play <YouTube URL or song name>
+
 /queue
 /now
 /skip
@@ -418,19 +478,26 @@ Commands:
 
 Buttons:
 
-⏭️ Skip - current song skip
-⏹️ Stop - stop current download
-📋 Queue - queue list
-🎵 Now - current song
-ℹ️ Help - help
-📊 Status - bot status
+⏭️ Skip
+⏹️ Stop
+📋 Queue
+🎵 Now
+ℹ️ Help
+📊 Status
 
-Audio files are automatically compressed to stay below
-the configured Telegram upload limit.
+🎧 Audio automatically converted
+and compressed below 40 MB.
 """
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
     await update.message.reply_text(
         HELP_TEXT,
         reply_markup=main_keyboard(),
@@ -443,27 +510,54 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status_text():
 
-    ffmpeg = "FOUND" if ffmpeg_available() else "NOT FOUND"
+    ffmpeg = (
+        "FOUND"
+        if ffmpeg_available()
+        else "NOT FOUND"
+    )
+
+    deno = (
+        "FOUND"
+        if shutil.which("deno")
+        else "NOT FOUND"
+    )
 
     total_queue = sum(
         len(q)
         for q in queues.values()
     )
 
-    running = len(current_tasks)
+    running = len(
+        current_tasks
+    )
 
     return (
         "📊 Resso Status\n\n"
+
         "🟢 Running\n"
+
         f"🎬 FFmpeg: {ffmpeg}\n"
+
+        f"🟨 Deno: {deno}\n"
+
         f"💾 Target: {TARGET_MB} MB\n"
+
         f"🚫 Maximum: {MAX_MB} MB\n"
+
         f"📋 Queued: {total_queue}\n"
+
         f"⚙️ Active: {running}"
     )
 
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def status_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
     await update.message.reply_text(
         await status_text(),
         reply_markup=main_keyboard(),
@@ -474,23 +568,42 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # QUEUE
 # =========================================================
 
-async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def queue_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
 
     chat_id = update.effective_chat.id
+
     queue = queues[chat_id]
 
     if not queue:
+
         await update.message.reply_text(
             "📋 Queue empty.",
             reply_markup=main_keyboard(),
         )
+
         return
 
     lines = ["📋 Queue:\n"]
 
-    for i, item in enumerate(queue, start=1):
-        title = item.get("title", "Unknown")
-        lines.append(f"{i}. {title}")
+    for i, item in enumerate(
+        queue,
+        start=1,
+    ):
+
+        title = item.get(
+            "title",
+            "Unknown",
+        )
+
+        lines.append(
+            f"{i}. {title}"
+        )
 
     await update.message.reply_text(
         "\n".join(lines),
@@ -502,149 +615,290 @@ async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # NOW
 # =========================================================
 
-async def now_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def now_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
 
     chat_id = update.effective_chat.id
 
-    task = current_tasks.get(chat_id)
+    task = current_tasks.get(
+        chat_id
+    )
 
     if not task:
+
         await update.message.reply_text(
-            "🎵 Nothing is playing/downloading right now.",
+            "🎵 Nothing is running.",
             reply_markup=main_keyboard(),
         )
+
         return
 
-    title = task.get("title", "Unknown")
-
     await update.message.reply_text(
-        f"🎵 Now:\n{title}",
+        "🎵 Now:\n"
+        + task.get(
+            "title",
+            "Unknown",
+        ),
         reply_markup=main_keyboard(),
     )
 
 
 # =========================================================
-# YOUTUBE SEARCH / DOWNLOAD
+# YOUTUBE DOWNLOAD
 # =========================================================
 
-def download_youtube(query, workdir):
+def download_youtube(
+    query,
+    workdir,
+):
 
     cookies = prepare_cookies()
 
     output_template = str(
-        Path(workdir) / "%(title).120s.%(ext)s"
+        Path(workdir)
+        / "%(title).120s.%(ext)s"
     )
 
+    # -----------------------------------------------------
+    # IMPORTANT:
+    #
+    # DO NOT FORCE android client.
+    #
+    # YouTube/yt-dlp currently has format limitations
+    # with some forced clients.
+    #
+    # default + web_embedded gives yt-dlp more usable
+    # formats.
+    # -----------------------------------------------------
+
     ydl_opts = {
-        "format": "bestaudio/best",
+
+        # Flexible audio selection
+        "format": (
+            "bestaudio[ext=m4a]"
+            "/bestaudio"
+            "/best"
+        ),
+
         "outtmpl": output_template,
 
         "noplaylist": True,
 
-        "quiet": True,
-        "no_warnings": True,
+        "quiet": False,
+
+        "no_warnings": False,
 
         "restrictfilenames": True,
+
+        "socket_timeout": 30,
+
+        "retries": 5,
+
+        "fragment_retries": 5,
+
+        "file_access_retries": 3,
+
+        "continuedl": True,
+
+        # -------------------------------------------------
+        # YouTube clients
+        # -------------------------------------------------
 
         "extractor_args": {
             "youtube": {
                 "player_client": [
-                    "android",
+                    "default",
+                    "web_embedded",
                 ],
             }
         },
 
-        "socket_timeout": 30,
+        # -------------------------------------------------
+        # JS challenge solving
+        # -------------------------------------------------
 
-        "retries": 3,
+        "js_runtimes": {
+            "deno": {}
+        },
 
-        "fragment_retries": 3,
+        # Allow yt-dlp to fetch EJS if needed
+        "remote_components": {
+            "ejs:github"
+        },
+
+        # -------------------------------------------------
+        # Browser-like headers
+        # -------------------------------------------------
 
         "http_headers": {
+
             "User-Agent": (
                 "Mozilla/5.0 "
-                "(Linux; Android 13) "
+                "(Linux; Android 13; SM-M127G) "
                 "AppleWebKit/537.36 "
                 "(KHTML, like Gecko) "
-                "Chrome/120 Mobile Safari/537.36"
-            )
+                "Chrome/131.0.0.0 "
+                "Mobile Safari/537.36"
+            ),
+
+            "Accept-Language":
+                "en-US,en;q=0.9",
+
         },
+
+        # Don't fail just because some formats
+        # are unavailable.
+        "ignore_no_formats_error": False,
     }
 
     if cookies:
-        ydl_opts["cookiefile"] = cookies
 
-    # Search if user didn't give URL.
+        ydl_opts[
+            "cookiefile"
+        ] = cookies
+
+        logger.info(
+            "Using YouTube cookies."
+        )
+
+    # -----------------------------------------------------
+    # Search
+    # -----------------------------------------------------
+
+    original_query = query
+
     if not (
-        query.startswith("http://")
-        or query.startswith("https://")
+        query.startswith(
+            "http://"
+        )
+        or query.startswith(
+            "https://"
+        )
     ):
-        query = f"ytsearch1:{query}"
+
+        query = (
+            "ytsearch1:"
+            + query
+        )
 
     logger.info(
-        "Downloading YouTube: %s",
+        "YouTube request: %s",
         query,
     )
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    try:
 
-        info = ydl.extract_info(
-            query,
-            download=True,
-        )
+        with yt_dlp.YoutubeDL(
+            ydl_opts
+        ) as ydl:
 
-        if "entries" in info:
-            entries = info.get("entries") or []
-
-            if not entries:
-                raise RuntimeError(
-                    "YouTube result not found."
-                )
-
-            info = entries[0]
-
-        title = info.get(
-            "title",
-            "Unknown",
-        )
-
-        duration = info.get(
-            "duration",
-            0,
-        )
-
-        files = list(
-            Path(workdir).glob("*")
-        )
-
-        media_files = [
-            f
-            for f in files
-            if f.is_file()
-            and f.suffix.lower()
-            not in [
-                ".part",
-                ".ytdl",
-                ".json",
-            ]
-        ]
-
-        if not media_files:
-            raise RuntimeError(
-                "Downloaded audio file not found."
+            info = ydl.extract_info(
+                query,
+                download=True,
             )
 
-        # Usually the largest media file is the actual audio.
-        media_file = max(
-            media_files,
-            key=lambda p: p.stat().st_size,
+            if not info:
+
+                raise RuntimeError(
+                    "YouTube returned no result."
+                )
+
+            # Search result
+            if "entries" in info:
+
+                entries = (
+                    info.get("entries")
+                    or []
+                )
+
+                if not entries:
+
+                    raise RuntimeError(
+                        "YouTube search returned "
+                        "no results."
+                    )
+
+                info = entries[0]
+
+            title = info.get(
+                "title",
+                original_query,
+            )
+
+            duration = info.get(
+                "duration",
+                0,
+            )
+
+            # -------------------------------------------------
+            # Find downloaded media
+            # -------------------------------------------------
+
+            files = list(
+                Path(workdir).glob("*")
+            )
+
+            media_files = [
+                f
+                for f in files
+                if (
+                    f.is_file()
+                    and f.suffix.lower()
+                    not in {
+                        ".part",
+                        ".ytdl",
+                        ".json",
+                    }
+                )
+            ]
+
+            if not media_files:
+
+                raise RuntimeError(
+                    "YouTube download finished "
+                    "but no audio file was found."
+                )
+
+            media_file = max(
+                media_files,
+                key=lambda p:
+                    p.stat().st_size,
+            )
+
+            logger.info(
+                "Downloaded file: %s",
+                media_file,
+            )
+
+            logger.info(
+                "Downloaded size: %.2f MB",
+                media_file.stat().st_size
+                / 1024
+                / 1024,
+            )
+
+            return {
+                "title": title,
+                "duration": duration,
+                "file": media_file,
+            }
+
+    except Exception as e:
+
+        logger.exception(
+            "yt-dlp failed for: %s",
+            original_query,
         )
 
-        return {
-            "title": title,
-            "duration": duration,
-            "file": media_file,
-        }
+        # Make the error useful in Telegram
+        raise RuntimeError(
+            f"YouTube error: {str(e)[:1200]}"
+        ) from e
 
 
 # =========================================================
@@ -688,6 +942,7 @@ async def process_song(
 
         loop = asyncio.get_running_loop()
 
+        # Download in background thread
         result = await loop.run_in_executor(
             None,
             download_youtube,
@@ -695,9 +950,13 @@ async def process_song(
             workdir,
         )
 
-        downloaded_file = result["file"]
+        downloaded_file = result[
+            "file"
+        ]
 
-        real_title = result["title"]
+        real_title = result[
+            "title"
+        ]
 
         await bot.send_message(
             chat_id=chat_id,
@@ -707,18 +966,23 @@ async def process_song(
             ),
         )
 
-        compressed_file = await loop.run_in_executor(
-            None,
-            compress_audio,
-            downloaded_file,
+        # Compress in background
+        compressed_file = (
+            await loop.run_in_executor(
+                None,
+                compress_audio,
+                downloaded_file,
+            )
         )
 
         size = compressed_file.stat().st_size
 
         if size > MAX_BYTES:
+
             raise RuntimeError(
-                f"Final audio is still "
-                f"{size / 1024 / 1024:.1f} MB."
+                "Final audio is "
+                f"{size / 1024 / 1024:.1f} MB "
+                "which exceeds 45 MB."
             )
 
         await bot.send_message(
@@ -726,7 +990,8 @@ async def process_song(
             text=(
                 "📤 Uploading...\n\n"
                 f"🎵 {real_title}\n"
-                f"💾 {size / 1024 / 1024:.1f} MB"
+                f"💾 "
+                f"{size / 1024 / 1024:.1f} MB"
             ),
         )
 
@@ -739,9 +1004,11 @@ async def process_song(
                 chat_id=chat_id,
                 audio=audio,
                 title=real_title[:64],
-                caption=f"🎵 {real_title}",
-                read_timeout=120,
-                write_timeout=120,
+                caption=(
+                    f"🎵 {real_title}"
+                ),
+                read_timeout=180,
+                write_timeout=180,
                 connect_timeout=30,
                 pool_timeout=30,
             )
@@ -755,22 +1022,28 @@ async def process_song(
     except Exception as e:
 
         logger.exception(
-            "Song processing failed: %s",
-            e,
+            "Song processing failed."
         )
+
+        error_text = str(e)
 
         await bot.send_message(
             chat_id=chat_id,
             text=(
                 "❌ YouTube download failed.\n\n"
+
                 f"🎵 {title}\n\n"
+
                 "Possible reasons:\n"
+                "• YouTube format unavailable\n"
                 "• YouTube cookies expired\n"
-                "• YouTube player changed\n"
+                "• JS/EJS challenge\n"
                 "• Network error\n"
                 "• FFmpeg error\n"
-                "• Audio could not be reduced below 45 MB\n\n"
-                f"Technical error:\n{str(e)[:1500]}"
+                "• Audio could not fit below 45 MB\n\n"
+
+                "Technical error:\n"
+                f"{error_text[:1800]}"
             ),
             reply_markup=main_keyboard(),
         )
@@ -783,10 +1056,12 @@ async def process_song(
         )
 
         try:
+
             shutil.rmtree(
                 workdir,
                 ignore_errors=True,
             )
+
         except Exception:
             pass
 
@@ -800,12 +1075,11 @@ async def queue_worker(
     bot,
 ):
 
-    if chat_id in current_tasks:
-        return
-
     while queues[chat_id]:
 
-        item = queues[chat_id].popleft()
+        item = queues[
+            chat_id
+        ].popleft()
 
         await process_song(
             chat_id,
@@ -830,22 +1104,22 @@ async def add_to_queue(
         "title": query,
     }
 
-    queues[chat_id].append(item)
+    queues[
+        chat_id
+    ].append(item)
 
     position = len(
         queues[chat_id]
     )
 
-    if chat_id in current_tasks:
+    if chat_id not in current_tasks:
 
-        return position
-
-    asyncio.create_task(
-        queue_worker(
-            chat_id,
-            bot,
+        asyncio.create_task(
+            queue_worker(
+                chat_id,
+                bot,
+            )
         )
-    )
 
     return position
 
@@ -886,21 +1160,12 @@ async def play_command(
         context.bot,
     )
 
-    if position == 1 and chat_id not in current_tasks:
-
-        await update.message.reply_text(
-            f"🎵 Starting:\n{query}",
-            reply_markup=main_keyboard(),
-        )
-
-    else:
-
-        await update.message.reply_text(
-            f"📋 Added to queue.\n"
-            f"Position: {position}\n\n"
-            f"🎵 {query}",
-            reply_markup=main_keyboard(),
-        )
+    await update.message.reply_text(
+        "🎵 Added:\n"
+        f"{query}\n\n"
+        f"📋 Position: {position}",
+        reply_markup=main_keyboard(),
+    )
 
 
 # =========================================================
@@ -912,9 +1177,14 @@ async def stop_command(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
+    if not update.message:
+        return
+
     chat_id = update.effective_chat.id
 
-    queues[chat_id].clear()
+    queues[
+        chat_id
+    ].clear()
 
     await update.message.reply_text(
         "⏹️ Queue stopped and cleared.\n\n"
@@ -932,14 +1202,56 @@ async def clear_command(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
+    if not update.message:
+        return
+
     chat_id = update.effective_chat.id
 
-    queues[chat_id].clear()
+    queues[
+        chat_id
+    ].clear()
 
     await update.message.reply_text(
         "🗑️ Queue cleared.",
         reply_markup=main_keyboard(),
     )
+
+
+# =========================================================
+# SKIP
+# =========================================================
+
+async def skip_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
+    chat_id = update.effective_chat.id
+
+    if queues[chat_id]:
+
+        skipped = queues[
+            chat_id
+        ].popleft()
+
+        await update.message.reply_text(
+            "⏭️ Skipped:\n"
+            + skipped.get(
+                "title",
+                "Unknown",
+            ),
+            reply_markup=main_keyboard(),
+        )
+
+    else:
+
+        await update.message.reply_text(
+            "📋 Queue is empty.",
+            reply_markup=main_keyboard(),
+        )
 
 
 # =========================================================
@@ -950,6 +1262,9 @@ async def remove_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
+    if not update.message:
+        return
 
     chat_id = update.effective_chat.id
 
@@ -962,70 +1277,45 @@ async def remove_command(
         return
 
     try:
+
         number = int(
             context.args[0]
         )
 
-        if number < 1:
+        queue = queues[
+            chat_id
+        ]
+
+        if (
+            number < 1
+            or number > len(queue)
+        ):
+
             raise ValueError
 
-        queue = queues[chat_id]
+        items = list(queue)
 
-        if number > len(queue):
-            await update.message.reply_text(
-                "❌ Invalid queue number."
-            )
-            return
-
-        queue.rotate(
-            -(number - 1)
-        )
-
-        removed = queue.popleft()
-
-        queue.rotate(
+        removed = items.pop(
             number - 1
         )
 
+        queues[
+            chat_id
+        ] = deque(items)
+
         await update.message.reply_text(
-            f"🗑️ Removed:\n"
-            f"{removed.get('title', 'Unknown')}",
+            "🗑️ Removed:\n"
+            + removed.get(
+                "title",
+                "Unknown",
+            ),
             reply_markup=main_keyboard(),
         )
 
     except ValueError:
 
         await update.message.reply_text(
-            "❌ Invalid number."
-        )
-
-
-# =========================================================
-# SKIP
-# =========================================================
-
-async def skip_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    chat_id = update.effective_chat.id
-
-    if queues[chat_id]:
-
-        skipped = queues[chat_id].popleft()
-
-        await update.message.reply_text(
-            f"⏭️ Skipped:\n"
-            f"{skipped.get('title', 'Unknown')}",
-            reply_markup=main_keyboard(),
-        )
-
-    else:
-
-        await update.message.reply_text(
-            "📋 Queue is empty.",
-            reply_markup=main_keyboard(),
+            "❌ Invalid queue number."
         )
 
 
@@ -1060,7 +1350,9 @@ async def callback_handler(
 
     elif query.data == "queue":
 
-        queue = queues[chat_id]
+        queue = queues[
+            chat_id
+        ]
 
         if not queue:
 
@@ -1068,17 +1360,23 @@ async def callback_handler(
 
         else:
 
-            lines = ["📋 Queue:\n"]
+            lines = [
+                "📋 Queue:\n"
+            ]
 
             for i, item in enumerate(
                 queue,
                 start=1,
             ):
+
                 lines.append(
-                    f"{i}. {item.get('title', 'Unknown')}"
+                    f"{i}. "
+                    f"{item.get('title', 'Unknown')}"
                 )
 
-            text = "\n".join(lines)
+            text = "\n".join(
+                lines
+            )
 
         await query.message.reply_text(
             text,
@@ -1087,13 +1385,18 @@ async def callback_handler(
 
     elif query.data == "now":
 
-        task = current_tasks.get(chat_id)
+        task = current_tasks.get(
+            chat_id
+        )
 
         if task:
 
             text = (
                 "🎵 Now:\n"
-                f"{task.get('title', 'Unknown')}"
+                + task.get(
+                    "title",
+                    "Unknown",
+                )
             )
 
         else:
@@ -1112,11 +1415,16 @@ async def callback_handler(
 
         if queues[chat_id]:
 
-            skipped = queues[chat_id].popleft()
+            skipped = queues[
+                chat_id
+            ].popleft()
 
             text = (
                 "⏭️ Skipped:\n"
-                f"{skipped.get('title', 'Unknown')}"
+                + skipped.get(
+                    "title",
+                    "Unknown",
+                )
             )
 
         else:
@@ -1130,7 +1438,9 @@ async def callback_handler(
 
     elif query.data == "stop":
 
-        queues[chat_id].clear()
+        queues[
+            chat_id
+        ].clear()
 
         await query.message.reply_text(
             "⏹️ Queue stopped and cleared.",
@@ -1238,7 +1548,7 @@ def create_application():
 
 
 # =========================================================
-# WEBHOOK
+# TELEGRAM WEBHOOK
 # =========================================================
 
 @flask_app.route(
@@ -1251,7 +1561,11 @@ def telegram_webhook():
     global bot_loop
 
     if application is None:
-        return "Bot not ready", 503
+
+        return (
+            "Bot not ready",
+            503,
+        )
 
     if WEBHOOK_SECRET:
 
@@ -1260,8 +1574,15 @@ def telegram_webhook():
             "",
         )
 
-        if received_secret != WEBHOOK_SECRET:
-            return "Forbidden", 403
+        if (
+            received_secret
+            != WEBHOOK_SECRET
+        ):
+
+            return (
+                "Forbidden",
+                403,
+            )
 
     try:
 
@@ -1275,7 +1596,11 @@ def telegram_webhook():
         )
 
         if bot_loop is None:
-            return "Loop not ready", 503
+
+            return (
+                "Loop not ready",
+                503,
+            )
 
         bot_loop.call_soon_threadsafe(
             application.update_queue.put_nowait,
@@ -1291,42 +1616,45 @@ def telegram_webhook():
             e,
         )
 
-        return "Bad Request", 400
+        return (
+            "Bad Request",
+            400,
+        )
 
 
 # =========================================================
-# ASYNC TELEGRAM STARTUP
+# TELEGRAM START
 # =========================================================
 
 async def telegram_start():
 
     global bot_loop
 
-    bot_loop = asyncio.get_running_loop()
+    bot_loop = (
+        asyncio.get_running_loop()
+    )
 
     await application.initialize()
 
     await application.start()
 
-    webhook_base = RENDER_URL
-
-    if not webhook_base:
+    if not RENDER_URL:
 
         raise RuntimeError(
             "RENDER_EXTERNAL_URL is missing."
         )
 
     webhook_url = (
-        webhook_base.rstrip("/")
+        RENDER_URL.rstrip("/")
         + "/telegram/webhook"
     )
 
     logger.info(
-        "Setting Telegram webhook: %s",
+        "Webhook URL: %s",
         webhook_url,
     )
 
-    # Remove any previous webhook first.
+    # Remove previous webhook
     await application.bot.delete_webhook(
         drop_pending_updates=True
     )
@@ -1347,10 +1675,10 @@ async def telegram_start():
         )
 
     logger.info(
-        "Telegram webhook is ACTIVE."
+        "Telegram webhook ACTIVE."
     )
 
-    # Keep asyncio loop alive.
+    # Keep loop alive
     await asyncio.Event().wait()
 
 
@@ -1378,18 +1706,56 @@ if __name__ == "__main__":
     if not BOT_TOKEN:
 
         raise SystemExit(
-            "ERROR: BOT_TOKEN is not configured."
+            "ERROR: BOT_TOKEN is missing."
         )
 
     logger.info(
-        "Starting Resso Bot..."
+        "================================"
+    )
+
+    logger.info(
+        "Starting Resso Bot"
     )
 
     logger.info(
         "FFmpeg: %s",
-        "FOUND"
-        if ffmpeg_available()
-        else "NOT FOUND",
+        (
+            "FOUND"
+            if ffmpeg_available()
+            else "NOT FOUND"
+        ),
+    )
+
+    logger.info(
+        "FFprobe: %s",
+        (
+            "FOUND"
+            if ffprobe_available()
+            else "NOT FOUND"
+        ),
+    )
+
+    logger.info(
+        "Deno: %s",
+        (
+            "FOUND"
+            if shutil.which("deno")
+            else "NOT FOUND"
+        ),
+    )
+
+    logger.info(
+        "Target: %s MB",
+        TARGET_MB,
+    )
+
+    logger.info(
+        "Maximum: %s MB",
+        MAX_MB,
+    )
+
+    logger.info(
+        "================================"
     )
 
     create_application()
