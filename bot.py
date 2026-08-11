@@ -1,4 +1,3 @@
-
 import os
 import asyncio
 import logging
@@ -11,8 +10,18 @@ from collections import defaultdict, deque
 
 from flask import Flask, request, jsonify
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+)
 
 import yt_dlp
 
@@ -22,18 +31,42 @@ import yt_dlp
 # =========================================================
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-PORT = int(os.environ.get("PORT", "10000"))
-RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "").strip()
 
-# Keep a safety margin below Telegram's upload limit.
+PORT = int(os.environ.get("PORT", "10000"))
+
+RENDER_URL = os.environ.get(
+    "RENDER_EXTERNAL_URL",
+    ""
+).strip()
+
+WEBHOOK_SECRET = os.environ.get(
+    "WEBHOOK_SECRET",
+    ""
+).strip()
+
+
+# ---------------------------------------------------------
+# TELEGRAM FILE SIZE
+# ---------------------------------------------------------
+
 TARGET_MB = 40
 MAX_MB = 45
+
 TARGET_BYTES = TARGET_MB * 1024 * 1024
 MAX_BYTES = MAX_MB * 1024 * 1024
 
-COOKIE_SECRET_PATH = Path("/etc/secrets/youtube_cookies.txt")
-COOKIE_TEMP_PATH = Path("/tmp/youtube_cookies.txt")
+
+# ---------------------------------------------------------
+# COOKIE FILE
+# ---------------------------------------------------------
+
+COOKIE_SECRET_PATH = Path(
+    "/etc/secrets/youtube_cookies.txt"
+)
+
+COOKIE_TEMP_PATH = Path(
+    "/tmp/youtube_cookies.txt"
+)
 
 
 # =========================================================
@@ -42,8 +75,14 @@ COOKIE_TEMP_PATH = Path("/tmp/youtube_cookies.txt")
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    format=(
+        "%(asctime)s | "
+        "%(levelname)s | "
+        "%(name)s | "
+        "%(message)s"
+    ),
 )
+
 logger = logging.getLogger("Resso")
 
 
@@ -61,13 +100,12 @@ def home():
 
 @flask_app.route("/health", methods=["GET"])
 def health():
+
     return jsonify(
         {
             "status": "ok",
             "bot": "Resso",
-            "ffmpeg": shutil.which("ffmpeg") is not None,
-            "ffprobe": shutil.which("ffprobe") is not None,
-            "deno": find_deno() is not None,
+            "ffmpeg": ffmpeg_available(),
             "yt_dlp": yt_dlp.version.__version__,
         }
     )
@@ -81,44 +119,12 @@ application = None
 bot_loop = None
 
 queues = defaultdict(deque)
+
 current_tasks = {}
-worker_tasks = {}
-state_lock = None
 
+worker_running = set()
 
-# =========================================================
-# RUNTIME HELPERS
-# =========================================================
-
-def find_deno():
-    """
-    Find Deno even when Render's runtime PATH does not contain
-    ~/.deno/bin.
-    """
-    candidates = [
-        os.environ.get("DENO_PATH", "").strip(),
-        shutil.which("deno"),
-        str(Path.home() / ".deno" / "bin" / "deno"),
-        "/opt/render/project/.deno/bin/deno",
-        "/opt/render/project/src/.deno/bin/deno",
-    ]
-
-    for item in candidates:
-        if not item:
-            continue
-        path = Path(item).expanduser()
-        if path.is_file() and os.access(path, os.X_OK):
-            return str(path)
-
-    return None
-
-
-def ffmpeg_available():
-    return shutil.which("ffmpeg") is not None
-
-
-def ffprobe_available():
-    return shutil.which("ffprobe") is not None
+stop_requested = set()
 
 
 # =========================================================
@@ -126,43 +132,69 @@ def ffprobe_available():
 # =========================================================
 
 def prepare_cookies():
-    """
-    Render Secret File:
-        /etc/secrets/youtube_cookies.txt
 
-    Copies it to /tmp for yt-dlp.
-    """
     try:
+
         if not COOKIE_SECRET_PATH.exists():
-            logger.warning("YouTube cookies NOT found: %s", COOKIE_SECRET_PATH)
+
+            logger.warning(
+                "Cookie file not found: %s",
+                COOKIE_SECRET_PATH,
+            )
+
             return None
 
-        shutil.copy2(COOKIE_SECRET_PATH, COOKIE_TEMP_PATH)
+        shutil.copy2(
+            COOKIE_SECRET_PATH,
+            COOKIE_TEMP_PATH,
+        )
 
-        if COOKIE_TEMP_PATH.stat().st_size < 20:
-            logger.warning("YouTube cookie file looks empty/invalid.")
-            return None
+        # Make sure file is readable.
+        try:
+            os.chmod(
+                COOKIE_TEMP_PATH,
+                0o600,
+            )
+        except Exception:
+            pass
 
         logger.info(
-            "YouTube cookies loaded (%d bytes).",
-            COOKIE_TEMP_PATH.stat().st_size,
+            "YouTube cookies loaded successfully."
         )
+
         return str(COOKIE_TEMP_PATH)
 
-    except Exception as exc:
-        logger.exception("Cookie setup failed: %s", exc)
+    except Exception as e:
+
+        logger.exception(
+            "Cookie setup failed: %s",
+            e,
+        )
+
         return None
 
 
 # =========================================================
-# AUDIO / FFMPEG
+# FFMPEG
 # =========================================================
 
+def ffmpeg_available():
+
+    return shutil.which("ffmpeg") is not None
+
+
+def ffprobe_available():
+
+    return shutil.which("ffprobe") is not None
+
+
 def get_duration(file_path):
+
     if not ffprobe_available():
         return 0.0
 
     try:
+
         result = subprocess.run(
             [
                 "ffprobe",
@@ -181,50 +213,103 @@ def get_duration(file_path):
         )
 
         value = result.stdout.strip()
-        return float(value) if value else 0.0
 
-    except Exception as exc:
-        logger.warning("Duration detection failed: %s", exc)
-        return 0.0
+        if value:
+            return float(value)
+
+    except Exception as e:
+
+        logger.warning(
+            "Duration detection failed: %s",
+            e,
+        )
+
+    return 0.0
 
 
-def bitrate_for_duration(duration):
-    """
-    Target ~38 MB so Telegram has some safety margin.
-    """
+# =========================================================
+# AUDIO BITRATE
+# =========================================================
+
+def calculate_bitrate(duration):
+
     if duration <= 0:
+
         return 128
 
+    # Keep output safely below 40 MB.
     safe_bytes = 38 * 1024 * 1024
-    kbps = int((safe_bytes * 8) / duration / 1000)
 
-    # Don't make normal songs unnecessarily low quality.
-    return max(32, min(kbps, 192))
+    bitrate = int(
+        (safe_bytes * 8)
+        / duration
+        / 1000
+    )
+
+    bitrate = min(
+        bitrate,
+        192,
+    )
+
+    bitrate = max(
+        bitrate,
+        32,
+    )
+
+    return bitrate
 
 
-def convert_to_mp3(input_file):
-    """
-    ALWAYS produce MP3 because Telegram send_audio expects
-    a supported audio format. The previous code could leave
-    a WebM file untouched when it was already <40 MB.
-    """
+# =========================================================
+# AUDIO COMPRESSION
+# =========================================================
+
+def compress_audio(input_file):
+
     input_file = Path(input_file)
 
     if not input_file.exists():
-        raise RuntimeError("Downloaded audio file does not exist.")
+        raise RuntimeError(
+            "Downloaded audio file does not exist."
+        )
+
+    original_size = input_file.stat().st_size
+
+    logger.info(
+        "Original size: %.2f MB",
+        original_size / 1024 / 1024,
+    )
+
+    # Already safe.
+    if original_size <= TARGET_BYTES:
+
+        logger.info(
+            "Audio already below %s MB.",
+            TARGET_MB,
+        )
+
+        return input_file
 
     if not ffmpeg_available():
-        raise RuntimeError("FFmpeg is not installed.")
 
-    duration = get_duration(input_file)
-    initial_bitrate = bitrate_for_duration(duration)
+        raise RuntimeError(
+            "FFmpeg is not installed."
+        )
 
-    output_file = input_file.with_name("resso_audio.mp3")
+    duration = get_duration(
+        input_file
+    )
 
-    # Try from calculated bitrate downwards.
-    attempts = []
-    for kbps in [
-        initial_bitrate,
+    bitrate = calculate_bitrate(
+        duration
+    )
+
+    output_file = input_file.with_name(
+        input_file.stem
+        + "_resso.mp3"
+    )
+
+    attempts = [
+        bitrate,
         160,
         128,
         112,
@@ -234,154 +319,208 @@ def convert_to_mp3(input_file):
         48,
         40,
         32,
-    ]:
-        if 32 <= kbps <= 192 and kbps not in attempts:
-            attempts.append(kbps)
+    ]
 
-    logger.info(
-        "Converting to MP3 | duration=%.1fs | attempts=%s",
-        duration,
-        attempts,
-    )
+    tried = set()
 
     for kbps in attempts:
+
+        if kbps in tried:
+            continue
+
+        tried.add(kbps)
+
         try:
+
             if output_file.exists():
                 output_file.unlink()
-        except OSError:
+
+        except Exception:
             pass
+
+        logger.info(
+            "FFmpeg compression: %s kbps",
+            kbps,
+        )
 
         command = [
             "ffmpeg",
             "-y",
+
             "-i",
             str(input_file),
+
             "-vn",
+
             "-ac",
             "2",
+
             "-ar",
             "44100",
+
             "-codec:a",
             "libmp3lame",
+
             "-b:a",
             f"{kbps}k",
+
             "-map_metadata",
             "-1",
+
             str(output_file),
         ]
 
-        result = subprocess.run(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=900,
-        )
+        try:
+
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=900,
+            )
+
+        except subprocess.TimeoutExpired:
+
+            logger.warning(
+                "FFmpeg timed out at %s kbps.",
+                kbps,
+            )
+
+            continue
 
         if result.returncode != 0:
-            logger.error(
-                "FFmpeg failed at %sk: %s",
+
+            logger.warning(
+                "FFmpeg failed at %s kbps: %s",
                 kbps,
-                result.stderr[-1500:],
+                result.stderr[-1000:],
             )
+
             continue
 
         if not output_file.exists():
             continue
 
         size = output_file.stat().st_size
+
         logger.info(
-            "MP3 size at %sk: %.2f MB",
+            "Output at %s kbps: %.2f MB",
             kbps,
             size / 1024 / 1024,
         )
 
         if size <= TARGET_BYTES:
+
+            try:
+                input_file.unlink()
+            except Exception:
+                pass
+
             return output_file
 
-        if size <= MAX_BYTES:
-            # Keep trying for the 40 MB target, but this is a valid fallback.
-            continue
+    # One final safety check.
+    if output_file.exists():
 
-    if output_file.exists() and output_file.stat().st_size <= MAX_BYTES:
-        return output_file
+        size = output_file.stat().st_size
+
+        if size <= MAX_BYTES:
+
+            logger.warning(
+                "Output is above target but below maximum: %.2f MB",
+                size / 1024 / 1024,
+            )
+
+            try:
+                input_file.unlink()
+            except Exception:
+                pass
+
+            return output_file
 
     raise RuntimeError(
-        "Audio could not be converted below 45 MB."
+        "Audio could not be reduced below "
+        f"{MAX_MB} MB."
     )
 
 
 # =========================================================
-# TELEGRAM UI
+# BUTTONS
 # =========================================================
 
 def main_keyboard():
+
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("⏭️ Skip", callback_data="skip"),
-                InlineKeyboardButton("⏹️ Stop", callback_data="stop"),
+                InlineKeyboardButton(
+                    "⏭️ Skip",
+                    callback_data="skip",
+                ),
+                InlineKeyboardButton(
+                    "⏹️ Stop",
+                    callback_data="stop",
+                ),
             ],
             [
-                InlineKeyboardButton("📋 Queue", callback_data="queue"),
-                InlineKeyboardButton("🎵 Now", callback_data="now"),
+                InlineKeyboardButton(
+                    "📋 Queue",
+                    callback_data="queue",
+                ),
+                InlineKeyboardButton(
+                    "🎵 Now",
+                    callback_data="now",
+                ),
             ],
             [
-                InlineKeyboardButton("ℹ️ Help", callback_data="help"),
-                InlineKeyboardButton("📊 Status", callback_data="status"),
+                InlineKeyboardButton(
+                    "ℹ️ Help",
+                    callback_data="help",
+                ),
+                InlineKeyboardButton(
+                    "📊 Status",
+                    callback_data="status",
+                ),
             ],
         ]
     )
 
 
+# =========================================================
+# HELP
+# =========================================================
+
 HELP_TEXT = """
 🎵 Resso Bot
 
-/play <YouTube URL or song name>
-/queue
-/now
-/skip
-/stop
-/remove <number>
-/clear
-/status
+/play <YouTube URL>
+/play <song name>
 
-The bot downloads YouTube audio, converts it to MP3,
-and tries to keep the final file at or below 40 MB.
+Commands:
+
+/play   - Download song
+/queue  - Show queue
+/now    - Current song
+/skip   - Skip queued song
+/stop   - Stop queue
+/clear  - Clear queue
+/remove <number> - Remove item
+/status - Bot status
+/help   - Help
+
+YouTube audio is automatically processed
+to stay below the configured Telegram size.
 """
 
 
-# =========================================================
-# STATUS
-# =========================================================
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
 
-async def status_text():
-    ffmpeg = "FOUND" if ffmpeg_available() else "NOT FOUND"
-    deno = "FOUND" if find_deno() else "NOT FOUND"
+    if not update.message:
+        return
 
-    total_queue = sum(len(q) for q in queues.values())
-    active = len(current_tasks)
-
-    return (
-        "📊 Resso Status\n\n"
-        "🟢 Running\n"
-        f"🎬 FFmpeg: {ffmpeg}\n"
-        f"🟨 Deno: {deno}\n"
-        f"💾 Target: {TARGET_MB} MB\n"
-        f"🚫 Maximum: {MAX_MB} MB\n"
-        f"📋 Queued: {total_queue}\n"
-        f"⚙️ Active: {active}"
-    )
-
-
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        await status_text(),
-        reply_markup=main_keyboard(),
-    )
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         HELP_TEXT,
         reply_markup=main_keyboard(),
@@ -389,105 +528,234 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================================================
-# QUEUE COMMANDS
+# STATUS
 # =========================================================
 
-async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def status_text():
+
+    ffmpeg = (
+        "FOUND"
+        if ffmpeg_available()
+        else "NOT FOUND"
+    )
+
+    cookies = (
+        "FOUND"
+        if COOKIE_SECRET_PATH.exists()
+        else "NOT FOUND"
+    )
+
+    queued = sum(
+        len(q)
+        for q in queues.values()
+    )
+
+    active = len(
+        current_tasks
+    )
+
+    workers = len(
+        worker_running
+    )
+
+    return (
+        "📊 Resso Status\n\n"
+        "🟢 Running\n"
+        f"🎬 FFmpeg: {ffmpeg}\n"
+        f"🍪 Cookies: {cookies}\n"
+        f"📦 yt-dlp: {yt_dlp.version.__version__}\n"
+        f"💾 Target: {TARGET_MB} MB\n"
+        f"🚫 Maximum: {MAX_MB} MB\n"
+        f"📋 Queued: {queued}\n"
+        f"⚙️ Active: {active}\n"
+        f"👷 Workers: {workers}"
+    )
+
+
+async def status_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
+    await update.message.reply_text(
+        await status_text(),
+        reply_markup=main_keyboard(),
+    )
+
+
+# =========================================================
+# QUEUE
+# =========================================================
+
+async def queue_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
     chat_id = update.effective_chat.id
+
     queue = queues[chat_id]
 
     if not queue:
-        text = "📋 Queue empty."
-    else:
-        lines = ["📋 Queue:\n"]
-        for i, item in enumerate(queue, 1):
-            lines.append(f"{i}. {item.get('title', item.get('query', 'Unknown'))}")
-        text = "\n".join(lines)
 
-    await update.message.reply_text(text, reply_markup=main_keyboard())
+        await update.message.reply_text(
+            "📋 Queue empty.",
+            reply_markup=main_keyboard(),
+        )
+
+        return
+
+    lines = [
+        "📋 Queue:\n"
+    ]
+
+    for index, item in enumerate(
+        queue,
+        start=1,
+    ):
+
+        title = item.get(
+            "title",
+            item.get(
+                "query",
+                "Unknown",
+            ),
+        )
+
+        lines.append(
+            f"{index}. {title}"
+        )
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        reply_markup=main_keyboard(),
+    )
 
 
-async def now_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# NOW
+# =========================================================
+
+async def now_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
     chat_id = update.effective_chat.id
-    task = current_tasks.get(chat_id)
+
+    task = current_tasks.get(
+        chat_id
+    )
 
     if not task:
-        text = "🎵 Nothing is running right now."
-    else:
-        text = f"🎵 Now:\n{task.get('title', 'Unknown')}"
 
-    await update.message.reply_text(text, reply_markup=main_keyboard())
+        await update.message.reply_text(
+            "🎵 Nothing is running right now.",
+            reply_markup=main_keyboard(),
+        )
 
-
-async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    queues[chat_id].clear()
+        return
 
     await update.message.reply_text(
-        "🗑️ Queue cleared.",
+        "🎵 Now:\n"
+        f"{task.get('title', 'Unknown')}",
         reply_markup=main_keyboard(),
     )
 
 
-async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    queues[chat_id].clear()
+# =========================================================
+# YOUTUBE URL CHECK
+# =========================================================
 
-    await update.message.reply_text(
-        "⏹️ Queue cleared.\n\n"
-        "The current download is not force-killed; it will finish safely.",
-        reply_markup=main_keyboard(),
+def is_url(query):
+
+    query = query.strip().lower()
+
+    return (
+        query.startswith(
+            "https://"
+        )
+        or query.startswith(
+            "http://"
+        )
     )
 
 
-async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
+# =========================================================
+# FIND MEDIA FILE
+# =========================================================
 
-    if not context.args:
-        await update.message.reply_text("Use: /remove <queue number>")
-        return
+def find_media_file(workdir):
 
-    try:
-        number = int(context.args[0])
-        queue = queues[chat_id]
+    ignored = {
+        ".part",
+        ".ytdl",
+        ".json",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".vtt",
+        ".srt",
+    }
 
-        if number < 1 or number > len(queue):
-            raise ValueError
+    files = []
 
-        items = list(queue)
-        removed = items.pop(number - 1)
+    for file in Path(workdir).iterdir():
 
-        queue.clear()
-        queue.extend(items)
+        if not file.is_file():
+            continue
 
-        await update.message.reply_text(
-            f"🗑️ Removed:\n{removed.get('title', removed.get('query', 'Unknown'))}",
-            reply_markup=main_keyboard(),
+        if file.suffix.lower() in ignored:
+            continue
+
+        if file.stat().st_size <= 0:
+            continue
+
+        files.append(file)
+
+    if not files:
+        return None
+
+    # Prefer audio extensions.
+    audio_extensions = {
+        ".mp3",
+        ".m4a",
+        ".webm",
+        ".opus",
+        ".aac",
+        ".wav",
+        ".flac",
+        ".ogg",
+        ".mp4",
+    }
+
+    audio_files = [
+        f
+        for f in files
+        if f.suffix.lower()
+        in audio_extensions
+    ]
+
+    if audio_files:
+
+        return max(
+            audio_files,
+            key=lambda x: x.stat().st_size,
         )
 
-    except ValueError:
-        await update.message.reply_text("❌ Invalid queue number.")
-
-
-async def skip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-
-    # Skip the current item by marking it as cancelled for the next
-    # stage; the worker remains safe and continues with the next item.
-    task = current_tasks.get(chat_id)
-
-    if task:
-        task["skip_requested"] = True
-        await update.message.reply_text(
-            "⏭️ Skip requested for the current song.\n"
-            "The worker will move to the next item after the current safe step.",
-            reply_markup=main_keyboard(),
-        )
-        return
-
-    await update.message.reply_text(
-        "📋 Nothing is currently running.",
-        reply_markup=main_keyboard(),
+    return max(
+        files,
+        key=lambda x: x.stat().st_size,
     )
 
 
@@ -495,123 +763,284 @@ async def skip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # YOUTUBE DOWNLOAD
 # =========================================================
 
-def download_youtube(query, workdir):
+def download_youtube(
+    query,
+    workdir,
+):
+
     cookies = prepare_cookies()
-    deno_path = find_deno()
 
-    output_template = str(Path(workdir) / "%(title).120s.%(ext)s")
-
-    ydl_opts = {
-        # Prefer an actual audio-only format, with fallbacks.
-        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-        "outtmpl": output_template,
-        "noplaylist": True,
-
-        # Keep logs useful on Render.
-        "quiet": True,
-        "no_warnings": False,
-
-        "restrictfilenames": True,
-        "socket_timeout": 30,
-        "retries": 3,
-        "fragment_retries": 3,
-        "continuedl": True,
-
-        # IMPORTANT:
-        # Do NOT force the old android client. That was contributing
-        # to "Requested format is not available" on the user's setup.
-        #
-        # Let current yt-dlp choose the supported YouTube clients.
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Linux; Android 13) "
-                "AppleWebKit/537.36 "
-                "(KHTML, like Gecko) "
-                "Chrome/140.0.0.0 Mobile Safari/537.36"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-    }
-
-    if cookies:
-        ydl_opts["cookiefile"] = cookies
-
-    # yt-dlp 2026 requires a JS runtime for full YouTube support.
-    if deno_path:
-        ydl_opts["js_runtimes"] = {
-            "deno": {
-                "path": deno_path,
-            }
-        }
-        # Let yt-dlp fetch the current EJS solver if the installed
-        # package is missing it.
-        ydl_opts["remote_components"] = ["ejs:github"]
-    else:
-        logger.warning(
-            "Deno NOT FOUND. YouTube format availability may be limited."
-        )
-
-    if not query.startswith(("http://", "https://")):
-        query = f"ytsearch1:{query}"
-
-    logger.info("YouTube request: %s", query)
-    logger.info(
-        "yt-dlp=%s | Deno=%s | Cookies=%s",
-        yt_dlp.version.__version__,
-        deno_path or "NOT FOUND",
-        "YES" if cookies else "NO",
+    output_template = str(
+        Path(workdir)
+        / "%(title).120s.%(ext)s"
     )
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(query, download=True)
+    # -----------------------------------------------------
+    # IMPORTANT:
+    #
+    # Do NOT force android client.
+    #
+    # YouTube currently changes available formats
+    # depending on player client.
+    # -----------------------------------------------------
 
-        if info.get("entries"):
-            entries = [entry for entry in info["entries"] if entry]
-            if not entries:
-                raise RuntimeError("YouTube result not found.")
-            info = entries[0]
+    strategies = [
+        {
+            "name": "default + web_embedded",
+            "extractor_args": {
+                "youtube": {
+                    "player_client": [
+                        "default",
+                        "web_embedded",
+                    ]
+                }
+            },
+        },
 
-        title = info.get("title") or "Unknown"
-        duration = info.get("duration") or 0
+        {
+            "name": "default",
+            "extractor_args": {
+                "youtube": {
+                    "player_client": [
+                        "default",
+                    ]
+                }
+            },
+        },
 
-        files = [
-            f for f in Path(workdir).glob("*")
-            if f.is_file()
-            and f.suffix.lower() not in {".part", ".ytdl", ".json"}
-        ]
+        {
+            "name": "web_embedded",
+            "extractor_args": {
+                "youtube": {
+                    "player_client": [
+                        "web_embedded",
+                    ]
+                }
+            },
+        },
+    ]
 
-        if not files:
-            raise RuntimeError("Downloaded audio file not found.")
+    if not is_url(query):
 
-        media_file = max(files, key=lambda p: p.stat().st_size)
+        download_query = (
+            "ytsearch1:"
+            + query
+        )
 
-        return {
-            "title": title,
-            "duration": duration,
-            "file": media_file,
+    else:
+
+        download_query = query
+
+    last_error = None
+
+    for strategy in strategies:
+
+        logger.info(
+            "YouTube strategy: %s",
+            strategy["name"],
+        )
+
+        # Clean workdir before retry.
+        for old_file in Path(
+            workdir
+        ).iterdir():
+
+            try:
+
+                if old_file.is_file():
+                    old_file.unlink()
+
+                elif old_file.is_dir():
+                    shutil.rmtree(
+                        old_file,
+                        ignore_errors=True,
+                    )
+
+            except Exception:
+                pass
+
+        ydl_opts = {
+
+            "format": (
+                "bestaudio/best"
+            ),
+
+            "outtmpl": output_template,
+
+            "noplaylist": True,
+
+            "quiet": True,
+
+            "no_warnings": False,
+
+            "restrictfilenames": True,
+
+            "socket_timeout": 45,
+
+            "retries": 5,
+
+            "fragment_retries": 5,
+
+            "file_access_retries": 3,
+
+            "extractor_retries": 3,
+
+            "concurrent_fragment_downloads": 1,
+
+            "http_headers": {
+                "User-Agent": (
+                    "Mozilla/5.0 "
+                    "(X11; Linux x86_64) "
+                    AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) "
+                    Chrome/131.0.0.0 "
+                    "Safari/537.36"
+                ),
+                "Accept-Language": (
+                    "en-US,en;q=0.9"
+                ),
+            },
+
+            "extractor_args": strategy[
+                "extractor_args"
+            ],
+
+            "noprogress": True,
+
+            "continuedl": True,
+
+            "overwrites": True,
+
+            "ignoreerrors": False,
         }
 
+        if cookies:
+
+            ydl_opts[
+                "cookiefile"
+            ] = cookies
+
+        try:
+
+            with yt_dlp.YoutubeDL(
+                ydl_opts
+            ) as ydl:
+
+                info = ydl.extract_info(
+                    download_query,
+                    download=True,
+                )
+
+                if not info:
+
+                    raise RuntimeError(
+                        "YouTube returned no result."
+                    )
+
+                if "entries" in info:
+
+                    entries = (
+                        info.get("entries")
+                        or []
+                    )
+
+                    if not entries:
+
+                        raise RuntimeError(
+                            "YouTube search returned no result."
+                        )
+
+                    info = entries[0]
+
+                title = info.get(
+                    "title",
+                    "Unknown",
+                )
+
+                duration = info.get(
+                    "duration",
+                    0,
+                )
+
+                media_file = (
+                    find_media_file(
+                        workdir
+                    )
+                )
+
+                if not media_file:
+
+                    raise RuntimeError(
+                        "Downloaded media file "
+                        "was not found."
+                    )
+
+                logger.info(
+                    "Downloaded: %s",
+                    media_file,
+                )
+
+                return {
+                    "title": title,
+                    "duration": duration,
+                    "file": media_file,
+                }
+
+        except Exception as e:
+
+            last_error = e
+
+            logger.warning(
+                "Strategy '%s' failed: %s",
+                strategy["name"],
+                str(e),
+            )
+
+            continue
+
+    raise RuntimeError(
+        "All YouTube download methods failed.\n\n"
+        f"Last error: {str(last_error)[:2000]}"
+    )
+
 
 # =========================================================
-# SONG PROCESSING
+# PROCESS SONG
 # =========================================================
 
-async def process_song(chat_id, item, bot):
-    title = item.get("title", item.get("query", "Unknown"))
-    query = item.get("query", "")
+async def process_song(
+    chat_id,
+    item,
+    bot,
+):
+
+    query = item.get(
+        "query",
+        "",
+    )
+
+    title = item.get(
+        "title",
+        query,
+    )
 
     current_tasks[chat_id] = {
         "title": title,
         "query": query,
-        "skip_requested": False,
     }
 
-    workdir = tempfile.mkdtemp(prefix="resso_")
+    workdir = tempfile.mkdtemp(
+        prefix="resso_"
+    )
 
     try:
+
         await bot.send_message(
             chat_id=chat_id,
-            text=f"⏳ Downloading...\n\n🎵 {title}",
+            text=(
+                "⏳ Downloading...\n\n"
+                f"🎵 {title}"
+            ),
         )
 
         loop = asyncio.get_running_loop()
@@ -623,36 +1052,55 @@ async def process_song(chat_id, item, bot):
             workdir,
         )
 
-        real_title = result["title"]
-        downloaded_file = result["file"]
+        real_title = result[
+            "title"
+        ]
 
-        current_tasks[chat_id]["title"] = real_title
+        downloaded_file = result[
+            "file"
+        ]
+
+        # -------------------------------------------------
+        # CHECK STOP
+        # -------------------------------------------------
+
+        if chat_id in stop_requested:
+
+            stop_requested.discard(
+                chat_id
+            )
+
+            return
 
         await bot.send_message(
             chat_id=chat_id,
-            text="🎧 Download complete.\n⚙️ Converting to MP3...",
+            text=(
+                "🎧 Download complete.\n"
+                "⚙️ Checking audio size..."
+            ),
         )
 
-        mp3_file = await loop.run_in_executor(
-            None,
-            convert_to_mp3,
-            downloaded_file,
-        )
-
-        if current_tasks.get(chat_id, {}).get("skip_requested"):
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"⏭️ Skipped:\n{real_title}",
-                reply_markup=main_keyboard(),
+        compressed_file = (
+            await loop.run_in_executor(
+                None,
+                compress_audio,
+                downloaded_file,
             )
-            return
+        )
 
-        size = mp3_file.stat().st_size
+        size = compressed_file.stat().st_size
 
         if size > MAX_BYTES:
+
             raise RuntimeError(
-                f"Final MP3 is {size / 1024 / 1024:.1f} MB, above the {MAX_MB} MB limit."
+                "Final audio is "
+                f"{size / 1024 / 1024:.1f} MB, "
+                "which is above the limit."
             )
+
+        # -------------------------------------------------
+        # UPLOAD
+        # -------------------------------------------------
 
         await bot.send_message(
             chat_id=chat_id,
@@ -663,17 +1111,22 @@ async def process_song(chat_id, item, bot):
             ),
         )
 
-        with mp3_file.open("rb") as audio:
+        with open(
+            compressed_file,
+            "rb",
+        ) as audio:
+
             await bot.send_audio(
                 chat_id=chat_id,
                 audio=audio,
                 title=real_title[:64],
-                caption=f"🎵 {real_title}",
-                duration=int(result.get("duration") or 0) or None,
+                caption=(
+                    f"🎵 {real_title}"
+                ),
                 read_timeout=180,
                 write_timeout=180,
-                connect_timeout=30,
-                pool_timeout=30,
+                connect_timeout=60,
+                pool_timeout=60,
             )
 
         await bot.send_message(
@@ -682,75 +1135,117 @@ async def process_song(chat_id, item, bot):
             reply_markup=main_keyboard(),
         )
 
-    except Exception as exc:
-        logger.exception("Song processing failed: %s", exc)
+    except Exception as e:
 
-        error_text = str(exc)
+        logger.exception(
+            "Song processing failed.",
+        )
 
-        if "Requested format is not available" in error_text:
-            reason = (
-                "YouTube ne requested format hata diya. "
-                "Code ab current formats automatically choose karega."
-            )
-        elif "Sign in to confirm" in error_text or "bot" in error_text.lower():
-            reason = (
-                "YouTube login/challenge aa raha hai. "
-                "Cookies check/refresh karni pad sakti hain."
-            )
-        elif "JavaScript runtime" in error_text or "Deno" in error_text:
-            reason = (
-                "Deno/EJS setup missing hai. Render build command check karo."
-            )
-        elif "could not be compressed" in error_text.lower():
-            reason = "Audio 45 MB ke neeche compress nahi ho paya."
-        else:
-            reason = "YouTube/Network/FFmpeg error."
+        error_text = str(e)
 
         await bot.send_message(
             chat_id=chat_id,
             text=(
                 "❌ YouTube download failed.\n\n"
                 f"🎵 {title}\n\n"
-                f"ℹ️ {reason}\n\n"
-                f"Technical error:\n{error_text[:1800]}"
+                "Possible reasons:\n"
+                "• YouTube changed its player\n"
+                "• Cookies expired/invalid\n"
+                "• Network error\n"
+                "• FFmpeg error\n"
+                "• Video has no downloadable audio\n\n"
+                "Technical error:\n"
+                f"{error_text[:2500]}"
             ),
             reply_markup=main_keyboard(),
         )
 
     finally:
-        current_tasks.pop(chat_id, None)
 
-        try:
-            shutil.rmtree(workdir, ignore_errors=True)
-        except Exception:
-            pass
+        current_tasks.pop(
+            chat_id,
+            None,
+        )
+
+        shutil.rmtree(
+            workdir,
+            ignore_errors=True,
+        )
 
 
 # =========================================================
 # QUEUE WORKER
 # =========================================================
 
-async def queue_worker(chat_id, bot):
+async def queue_worker(
+    chat_id,
+    bot,
+):
+
+    if chat_id in worker_running:
+        return
+
+    worker_running.add(
+        chat_id
+    )
+
     try:
+
         while queues[chat_id]:
-            item = queues[chat_id].popleft()
-            await process_song(chat_id, item, bot)
+
+            item = queues[
+                chat_id
+            ].popleft()
+
+            await process_song(
+                chat_id,
+                item,
+                bot,
+            )
+
     finally:
-        worker_tasks.pop(chat_id, None)
+
+        worker_running.discard(
+            chat_id
+        )
+
+        current_tasks.pop(
+            chat_id,
+            None,
+        )
 
 
-async def add_to_queue(chat_id, query, bot):
+# =========================================================
+# ADD QUEUE
+# =========================================================
+
+async def add_to_queue(
+    chat_id,
+    query,
+    bot,
+):
+
     item = {
         "query": query,
         "title": query,
     }
 
-    queues[chat_id].append(item)
-    position = len(queues[chat_id])
+    queues[
+        chat_id
+    ].append(item)
 
-    if chat_id not in worker_tasks:
-        worker_tasks[chat_id] = asyncio.create_task(
-            queue_worker(chat_id, bot)
+    position = len(
+        queues[chat_id]
+    )
+
+    # Start only one worker.
+    if chat_id not in worker_running:
+
+        asyncio.create_task(
+            queue_worker(
+                chat_id,
+                bot,
+            )
         )
 
     return position
@@ -760,106 +1255,386 @@ async def add_to_queue(chat_id, query, bot):
 # PLAY
 # =========================================================
 
-async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def play_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     if not update.message:
         return
 
     if not context.args:
+
         await update.message.reply_text(
-            "🎵 Use:\n\n/play <YouTube URL>\n\nor\n\n/play <song name>",
+            "🎵 Use:\n\n"
+            "/play <YouTube URL>\n\n"
+            "or\n\n"
+            "/play <song name>",
             reply_markup=main_keyboard(),
         )
+
         return
 
-    query = " ".join(context.args).strip()
-    chat_id = update.effective_chat.id
+    chat_id = (
+        update.effective_chat.id
+    )
 
-    position = await add_to_queue(chat_id, query, context.bot)
+    query = " ".join(
+        context.args
+    ).strip()
 
-    if position == 1 and chat_id not in current_tasks:
-        text = f"🎵 Starting:\n{query}"
+    was_idle = (
+        chat_id not in worker_running
+        and chat_id not in current_tasks
+    )
+
+    position = await add_to_queue(
+        chat_id,
+        query,
+        context.bot,
+    )
+
+    if was_idle:
+
+        await update.message.reply_text(
+            "🎵 Starting:\n"
+            f"{query}",
+            reply_markup=main_keyboard(),
+        )
+
     else:
-        text = f"📋 Added to queue.\nPosition: {position}\n\n🎵 {query}"
+
+        await update.message.reply_text(
+            "📋 Added to queue.\n"
+            f"Position: {position}\n\n"
+            f"🎵 {query}",
+            reply_markup=main_keyboard(),
+        )
+
+
+# =========================================================
+# STOP
+# =========================================================
+
+async def stop_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
+    chat_id = (
+        update.effective_chat.id
+    )
+
+    queues[
+        chat_id
+    ].clear()
+
+    stop_requested.add(
+        chat_id
+    )
 
     await update.message.reply_text(
-        text,
+        "⏹️ Queue cleared.\n\n"
+        "Current download/upload will "
+        "finish safely.",
         reply_markup=main_keyboard(),
     )
 
 
 # =========================================================
-# CALLBACKS
+# CLEAR
 # =========================================================
 
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def clear_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
+    chat_id = (
+        update.effective_chat.id
+    )
+
+    queues[
+        chat_id
+    ].clear()
+
+    await update.message.reply_text(
+        "🗑️ Queue cleared.",
+        reply_markup=main_keyboard(),
+    )
+
+
+# =========================================================
+# REMOVE
+# =========================================================
+
+async def remove_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
+    chat_id = (
+        update.effective_chat.id
+    )
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "Use:\n"
+            "/remove <queue number>"
+        )
+
+        return
+
+    try:
+
+        number = int(
+            context.args[0]
+        )
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ Invalid number."
+        )
+
+        return
+
+    queue = queues[
+        chat_id
+    ]
+
+    if number < 1 or number > len(queue):
+
+        await update.message.reply_text(
+            "❌ Invalid queue number."
+        )
+
+        return
+
+    items = list(queue)
+
+    removed = items.pop(
+        number - 1
+    )
+
+    queue.clear()
+
+    queue.extend(
+        items
+    )
+
+    await update.message.reply_text(
+        "🗑️ Removed:\n"
+        f"{removed.get('title', 'Unknown')}",
+        reply_markup=main_keyboard(),
+    )
+
+
+# =========================================================
+# SKIP
+# =========================================================
+
+async def skip_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
+    chat_id = (
+        update.effective_chat.id
+    )
+
+    queue = queues[
+        chat_id
+    ]
+
+    if not queue:
+
+        await update.message.reply_text(
+            "📋 No queued song to skip.",
+            reply_markup=main_keyboard(),
+        )
+
+        return
+
+    skipped = queue.popleft()
+
+    await update.message.reply_text(
+        "⏭️ Skipped:\n"
+        f"{skipped.get('title', 'Unknown')}",
+        reply_markup=main_keyboard(),
+    )
+
+
+# =========================================================
+# CALLBACK
+# =========================================================
+
+async def callback_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     query = update.callback_query
+
     await query.answer()
 
-    chat_id = query.message.chat.id
+    chat_id = (
+        query.message.chat.id
+    )
+
     data = query.data
 
+    # -----------------------------------------------------
+    # HELP
+    # -----------------------------------------------------
+
     if data == "help":
+
         await query.message.reply_text(
             HELP_TEXT,
             reply_markup=main_keyboard(),
         )
 
+    # -----------------------------------------------------
+    # STATUS
+    # -----------------------------------------------------
+
     elif data == "status":
+
         await query.message.reply_text(
             await status_text(),
             reply_markup=main_keyboard(),
         )
 
+    # -----------------------------------------------------
+    # QUEUE
+    # -----------------------------------------------------
+
     elif data == "queue":
-        queue = queues[chat_id]
+
+        queue = queues[
+            chat_id
+        ]
 
         if not queue:
-            text = "📋 Queue empty."
+
+            text = (
+                "📋 Queue empty."
+            )
+
         else:
-            lines = ["📋 Queue:\n"]
-            for i, item in enumerate(queue, 1):
+
+            lines = [
+                "📋 Queue:\n"
+            ]
+
+            for i, item in enumerate(
+                queue,
+                start=1,
+            ):
+
                 lines.append(
-                    f"{i}. {item.get('title', item.get('query', 'Unknown'))}"
+                    f"{i}. "
+                    f"{item.get('title', 'Unknown')}"
                 )
-            text = "\n".join(lines)
+
+            text = "\n".join(
+                lines
+            )
 
         await query.message.reply_text(
             text,
             reply_markup=main_keyboard(),
         )
+
+    # -----------------------------------------------------
+    # NOW
+    # -----------------------------------------------------
 
     elif data == "now":
-        task = current_tasks.get(chat_id)
+
+        task = current_tasks.get(
+            chat_id
+        )
 
         if task:
-            text = f"🎵 Now:\n{task.get('title', 'Unknown')}"
+
+            text = (
+                "🎵 Now:\n"
+                f"{task.get('title', 'Unknown')}"
+            )
+
         else:
-            text = "🎵 Nothing is running right now."
+
+            text = (
+                "🎵 Nothing is "
+                "running right now."
+            )
 
         await query.message.reply_text(
             text,
             reply_markup=main_keyboard(),
         )
+
+    # -----------------------------------------------------
+    # SKIP
+    # -----------------------------------------------------
 
     elif data == "skip":
-        task = current_tasks.get(chat_id)
 
-        if task:
-            task["skip_requested"] = True
-            text = "⏭️ Skip requested. Current song will be skipped safely."
+        queue = queues[
+            chat_id
+        ]
+
+        if queue:
+
+            skipped = queue.popleft()
+
+            text = (
+                "⏭️ Skipped:\n"
+                f"{skipped.get('title', 'Unknown')}"
+            )
+
         else:
-            text = "📋 Nothing is currently running."
+
+            text = (
+                "📋 No queued song."
+            )
 
         await query.message.reply_text(
             text,
             reply_markup=main_keyboard(),
         )
 
+    # -----------------------------------------------------
+    # STOP
+    # -----------------------------------------------------
+
     elif data == "stop":
-        queues[chat_id].clear()
+
+        queues[
+            chat_id
+        ].clear()
+
+        stop_requested.add(
+            chat_id
+        )
 
         await query.message.reply_text(
-            "⏹️ Queue cleared.\nCurrent download is not force-killed.",
+            "⏹️ Queue stopped and cleared.",
             reply_markup=main_keyboard(),
         )
 
@@ -869,116 +1644,266 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================================================
 
 def create_application():
+
     global application
 
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN environment variable is missing.")
 
-    application = Application.builder().token(BOT_TOKEN).build()
+        raise RuntimeError(
+            "BOT_TOKEN environment variable "
+            "is missing."
+        )
 
-    application.add_handler(CommandHandler("start", help_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("play", play_command))
-    application.add_handler(CommandHandler("queue", queue_command))
-    application.add_handler(CommandHandler("now", now_command))
-    application.add_handler(CommandHandler("skip", skip_command))
-    application.add_handler(CommandHandler("stop", stop_command))
-    application.add_handler(CommandHandler("clear", clear_command))
-    application.add_handler(CommandHandler("remove", remove_command))
-    application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CallbackQueryHandler(callback_handler))
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "start",
+            help_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "help",
+            help_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "play",
+            play_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "queue",
+            queue_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "now",
+            now_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "skip",
+            skip_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "stop",
+            stop_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "clear",
+            clear_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "remove",
+            remove_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "status",
+            status_command,
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            callback_handler
+        )
+    )
 
     return application
 
 
 # =========================================================
-# WEBHOOK
+# TELEGRAM WEBHOOK
 # =========================================================
 
-@flask_app.route("/telegram/webhook", methods=["POST"])
+@flask_app.route(
+    "/telegram/webhook",
+    methods=["POST"],
+)
 def telegram_webhook():
-    global application, bot_loop
 
-    if application is None or bot_loop is None:
-        return "Bot not ready", 503
+    global application
+    global bot_loop
+
+    if application is None:
+
+        return (
+            "Bot not ready",
+            503,
+        )
+
+    # -----------------------------------------------------
+    # SECRET CHECK
+    # -----------------------------------------------------
 
     if WEBHOOK_SECRET:
-        received_secret = request.headers.get(
-            "X-Telegram-Bot-Api-Secret-Token",
-            "",
+
+        received_secret = (
+            request.headers.get(
+                "X-Telegram-Bot-Api-Secret-Token",
+                "",
+            )
         )
+
         if received_secret != WEBHOOK_SECRET:
-            return "Forbidden", 403
+
+            return (
+                "Forbidden",
+                403,
+            )
 
     try:
-        data = request.get_json(force=True)
 
-        update = Update.de_json(data, application.bot)
+        data = request.get_json(
+            force=True
+        )
+
+        if not data:
+
+            return (
+                "Bad Request",
+                400,
+            )
+
+        update = Update.de_json(
+            data,
+            application.bot,
+        )
+
+        if bot_loop is None:
+
+            return (
+                "Loop not ready",
+                503,
+            )
 
         bot_loop.call_soon_threadsafe(
             application.update_queue.put_nowait,
             update,
         )
 
-        return "OK", 200
+        return (
+            "OK",
+            200,
+        )
 
-    except Exception as exc:
-        logger.exception("Webhook error: %s", exc)
-        return "Bad Request", 400
+    except Exception as e:
+
+        logger.exception(
+            "Webhook error: %s",
+            e,
+        )
+
+        return (
+            "Bad Request",
+            400,
+        )
 
 
 # =========================================================
-# TELEGRAM STARTUP
+# TELEGRAM START
 # =========================================================
 
 async def telegram_start():
+
     global bot_loop
 
-    bot_loop = asyncio.get_running_loop()
+    bot_loop = (
+        asyncio.get_running_loop()
+    )
 
     await application.initialize()
+
     await application.start()
 
     if not RENDER_URL:
+
         raise RuntimeError(
-            "RENDER_EXTERNAL_URL is missing. "
-            "Use a Render Web Service."
+            "RENDER_EXTERNAL_URL is missing."
         )
 
-    webhook_url = RENDER_URL.rstrip("/") + "/telegram/webhook"
-
-    logger.info("Clearing old Telegram webhook...")
-    await application.bot.delete_webhook(drop_pending_updates=True)
-
-    logger.info("Setting webhook: %s", webhook_url)
-
-    webhook_kwargs = {
-        "url": webhook_url,
-        "drop_pending_updates": True,
-    }
-
-    if WEBHOOK_SECRET:
-        webhook_kwargs["secret_token"] = WEBHOOK_SECRET
-
-    await application.bot.set_webhook(**webhook_kwargs)
-
-    webhook_info = await application.bot.get_webhook_info()
-
-    logger.info(
-        "Webhook ACTIVE | url=%s | pending=%s | last_error=%s",
-        webhook_info.url,
-        webhook_info.pending_update_count,
-        webhook_info.last_error_message,
+    webhook_url = (
+        RENDER_URL.rstrip("/")
+        + "/telegram/webhook"
     )
 
+    logger.info(
+        "Webhook URL: %s",
+        webhook_url,
+    )
+
+    # Remove old webhook.
+    await application.bot.delete_webhook(
+        drop_pending_updates=True
+    )
+
+    if WEBHOOK_SECRET:
+
+        await application.bot.set_webhook(
+            url=webhook_url,
+            secret_token=WEBHOOK_SECRET,
+            drop_pending_updates=True,
+        )
+
+    else:
+
+        await application.bot.set_webhook(
+            url=webhook_url,
+            drop_pending_updates=True,
+        )
+
+    logger.info(
+        "Telegram webhook ACTIVE."
+    )
+
+    # Keep loop alive.
     await asyncio.Event().wait()
 
 
+# =========================================================
+# TELEGRAM THREAD
+# =========================================================
+
 def telegram_thread():
+
     try:
-        asyncio.run(telegram_start())
+
+        asyncio.run(
+            telegram_start()
+        )
+
     except Exception:
-        logger.exception("Telegram thread stopped.")
+
+        logger.exception(
+            "Telegram thread stopped."
+        )
 
 
 # =========================================================
@@ -986,32 +1911,64 @@ def telegram_thread():
 # =========================================================
 
 if __name__ == "__main__":
-    if not BOT_TOKEN:
-        raise SystemExit("ERROR: BOT_TOKEN is not configured.")
 
-    logger.info("Starting Resso Bot...")
-    logger.info("yt-dlp: %s", yt_dlp.version.__version__)
-    logger.info("FFmpeg: %s", "FOUND" if ffmpeg_available() else "NOT FOUND")
-    logger.info("FFprobe: %s", "FOUND" if ffprobe_available() else "NOT FOUND")
-    logger.info("Deno: %s", find_deno() or "NOT FOUND")
+    if not BOT_TOKEN:
+
+        raise SystemExit(
+            "ERROR: BOT_TOKEN is not configured."
+        )
+
+    logger.info(
+        "===================================="
+    )
+
+    logger.info(
+        "Starting Resso Bot"
+    )
+
+    logger.info(
+        "yt-dlp version: %s",
+        yt_dlp.version.__version__,
+    )
+
+    logger.info(
+        "FFmpeg: %s",
+        (
+            "FOUND"
+            if ffmpeg_available()
+            else "NOT FOUND"
+        ),
+    )
+
     logger.info(
         "Cookies: %s",
-        "FOUND" if COOKIE_SECRET_PATH.exists() else "NOT FOUND",
+        (
+            "FOUND"
+            if COOKIE_SECRET_PATH.exists()
+            else "NOT FOUND"
+        ),
+    )
+
+    logger.info(
+        "===================================="
     )
 
     create_application()
 
     thread = threading.Thread(
         target=telegram_thread,
-        name="telegram-loop",
         daemon=True,
     )
+
     thread.start()
 
-    logger.info("Starting Flask on port %s", PORT)
+    logger.info(
+        "Starting Flask on port %s",
+        PORT,
+    )
 
     flask_app.run(
         host="0.0.0.0",
         port=PORT,
         threaded=True,
-    )
+        )
