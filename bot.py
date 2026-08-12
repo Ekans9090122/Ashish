@@ -280,7 +280,8 @@ def resolve_video(query: str):
         "noplaylist": True,
         "skip_download": True,
         "extract_flat": False,
-        "retries": 3,
+        "retries": 5,
+        "extractor_retries": 5,
         "socket_timeout": 30,
         "http_headers": {
             "User-Agent": (
@@ -294,6 +295,9 @@ def resolve_video(query: str):
     if cookie_file:
         opts["cookiefile"] = cookie_file
         logger.info("YouTube cookies enabled.")
+
+    # Let yt-dlp fetch the maintained EJS challenge scripts.
+    opts["remote_components"] = {"ejs:github": "default"}
 
     if deno_path:
         opts["js_runtimes"] = {"deno": deno_path}
@@ -395,8 +399,9 @@ def download_audio(
         "noplaylist": True,
         "quiet": True,
         "no_warnings": False,
-        "retries": 5,
-        "fragment_retries": 5,
+        "retries": 8,
+        "fragment_retries": 8,
+        "extractor_retries": 5,
         "file_access_retries": 5,
         "socket_timeout": 30,
         "concurrent_fragment_downloads": 1,
@@ -411,6 +416,9 @@ def download_audio(
 
     if cookie_file:
         opts["cookiefile"] = cookie_file
+
+    # YouTube EJS challenge solver scripts.
+    opts["remote_components"] = {"ejs:github": "default"}
 
     if deno_path:
         opts["js_runtimes"] = {"deno": deno_path}
@@ -443,11 +451,53 @@ def download_audio(
     try:
         logger.info("Starting yt-dlp download: %s", query)
 
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(
-                query,
-                download=True,
-            )
+        attempts = [opts]
+
+        # A stale/rotated cookie jar can itself trigger YouTube's
+        # "The page needs to be reloaded" response. If cookies exist,
+        # first try a clean anonymous request, then retry authenticated.
+        if cookie_file:
+            clean_opts = dict(opts)
+            clean_opts.pop("cookiefile", None)
+            attempts.insert(0, clean_opts)
+
+        last_error = None
+
+        for attempt_no, attempt_opts in enumerate(attempts, 1):
+            if cancel_event.is_set():
+                raise RuntimeError("Download cancelled by user.")
+
+            try:
+                logger.info(
+                    "yt-dlp attempt %d/%d (cookies=%s)",
+                    attempt_no,
+                    len(attempts),
+                    "yes" if "cookiefile" in attempt_opts else "no",
+                )
+
+                with yt_dlp.YoutubeDL(attempt_opts) as ydl:
+                    info = ydl.extract_info(
+                        query,
+                        download=True,
+                    )
+                break
+            except Exception as attempt_error:
+                last_error = attempt_error
+                logger.warning(
+                    "yt-dlp attempt %d failed: %s",
+                    attempt_no,
+                    attempt_error,
+                )
+
+                # Remove partial media before the next attempt.
+                for partial in workdir.rglob("*"):
+                    if partial.is_file():
+                        try:
+                            partial.unlink()
+                        except Exception:
+                            pass
+        else:
+            raise RuntimeError(str(last_error) if last_error else "yt-dlp failed.")
 
         if cancel_event.is_set():
             raise RuntimeError("Download cancelled by user.")
