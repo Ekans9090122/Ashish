@@ -1,5 +1,4 @@
-python-telegram-bot>=22.8,<23
-Flask>=3.0,<4
-yt-dlp[default,curl-cffi]>=2026.07.04
-deno==2.9.3
-imageio-ffmpeg>=0.6.0,<0.7
+python-telegram-bot==22.8
+Flask==3.1.1
+yt-dlp>=2026.07.04
+imageio-ffmpeg==0.6.0
