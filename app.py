@@ -890,7 +890,9 @@ async def process_queue(chat_id: int, bot):
         skip_events.pop(chat_id, None)
 
         async with queue_lock:
-            queues[chat_id].current = None# ============================================================
+            queues[chat_id].current = None 
+
+ # ============================================================
 # QUEUE COMMAND
 # ============================================================
 
