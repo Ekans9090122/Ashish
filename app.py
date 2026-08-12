@@ -7,7 +7,7 @@ import threading
 import shutil
 import subprocess
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from collections import defaultdict, deque
 from urllib.parse import urlparse
 
@@ -36,29 +36,27 @@ import yt_dlp
 # ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-
 PORT = int(os.getenv("PORT", "10000"))
 
-# Optional YouTube cookies.
-# If you upload cookies.txt to the Render project root,
-# this will automatically use it.
-COOKIE_FILE = os.getenv("COOKIE_FILE", "cookies.txt").strip()
+# Render Secret File:
+# /etc/secrets/youtube_cookies.txt
+COOKIE_FILE = os.getenv(
+    "COOKIE_FILE",
+    "/etc/secrets/youtube_cookies.txt"
+).strip()
 
-# Maximum Telegram upload size is handled conservatively.
 MAX_FILE_SIZE = 49 * 1024 * 1024
 
-DOWNLOAD_TIMEOUT = 300
-
 logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("music_bot")
 
 
 # ============================================================
-# FLASK / RENDER HEALTH SERVER
+# FLASK
 # ============================================================
 
 app = Flask(__name__)
@@ -66,21 +64,17 @@ app = Flask(__name__)
 
 @app.get("/")
 def home():
-    return jsonify(
-        {
-            "status": "online",
-            "service": "Telegram Music Bot",
-        }
-    )
+    return jsonify({
+        "status": "online",
+        "service": "Telegram Music Bot"
+    })
 
 
 @app.get("/health")
 def health():
-    return jsonify(
-        {
-            "status": "ok",
-        }
-    )
+    return jsonify({
+        "status": "ok"
+    })
 
 
 def run_flask():
@@ -93,69 +87,82 @@ def run_flask():
 
 
 # ============================================================
-# DATA STRUCTURES
+# DATA
 # ============================================================
 
 @dataclass
 class Song:
     url: str
     title: str = "Unknown"
-    requester: str = ""
+    requester: str = "Unknown"
     status: str = "queued"
 
 
-@dataclass
-class UserQueue:
-    items: deque = field(default_factory=deque)
-    current: Song | None = None
+queues = defaultdict(
+    lambda: {
+        "items": deque(),
+        "current": None,
+    }
+)
 
-
-queues = defaultdict(UserQueue)
-
-# One lock protects queue changes.
 queue_lock = asyncio.Lock()
 
-# Currently running downloads/tasks.
 active_tasks = {}
 
-# Used to stop the current download/playback.
-stop_events = {}
-
-# Used for skip requests.
 skip_events = {}
+stop_events = {}
 
 
 # ============================================================
-# KEYBOARDS
+# KEYBOARD
 # ============================================================
 
 def main_keyboard():
-    return InlineKeyboardMarkup(
+    return InlineKeyboardMarkup([
         [
-            [
-                InlineKeyboardButton("▶️ Play", callback_data="help_play"),
-                InlineKeyboardButton("📋 Queue", callback_data="queue"),
-            ],
-            [
-                InlineKeyboardButton("⏭️ Skip", callback_data="skip"),
-                InlineKeyboardButton("⏹️ Stop", callback_data="stop"),
-            ],
-            [
-                InlineKeyboardButton("🎵 Now", callback_data="now"),
-                InlineKeyboardButton("ℹ️ Help", callback_data="help"),
-            ],
-            [
-                InlineKeyboardButton("📊 Status", callback_data="status"),
-            ],
-        ]
-    )
+            InlineKeyboardButton(
+                "▶️ Play",
+                callback_data="help_play"
+            ),
+            InlineKeyboardButton(
+                "📋 Queue",
+                callback_data="queue"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "⏭️ Skip",
+                callback_data="skip"
+            ),
+            InlineKeyboardButton(
+                "⏹️ Stop",
+                callback_data="stop"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🎵 Now",
+                callback_data="now"
+            ),
+            InlineKeyboardButton(
+                "ℹ️ Help",
+                callback_data="help"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "📊 Status",
+                callback_data="status"
+            ),
+        ],
+    ])
 
 
 # ============================================================
-# BASIC HELPERS
+# HELPERS
 # ============================================================
 
-def is_youtube_url(text: str) -> bool:
+def is_youtube_url(text):
     if not text:
         return False
 
@@ -164,26 +171,34 @@ def is_youtube_url(text: str) -> bool:
         host = (parsed.netloc or "").lower()
 
         return (
-            "youtube.com" in host
-            or "youtu.be" in host
-            or "music.youtube.com" in host
+            host == "youtube.com"
+            or host.endswith(".youtube.com")
+            or host == "youtu.be"
+            or host.endswith(".youtu.be")
         )
+
     except Exception:
         return False
 
 
-def clean_url(text: str) -> str:
+def clean_url(text):
     return text.strip().split()[0]
 
 
-def safe_filename(name: str) -> str:
-    name = re.sub(r'[\\/:*?"<>|]+', "_", name)
-    name = re.sub(r"\s+", " ", name).strip()
+def safe_filename(name):
+    name = re.sub(
+        r'[\\/:*?"<>|]+',
+        "_",
+        name
+    )
 
-    if not name:
-        name = "audio"
+    name = re.sub(
+        r"\s+",
+        " ",
+        name
+    ).strip()
 
-    return name[:180]
+    return (name or "audio")[:180]
 
 
 def format_duration(seconds):
@@ -195,8 +210,8 @@ def format_duration(seconds):
     except Exception:
         return "Unknown"
 
-    hours, remainder = divmod(seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
 
     if hours:
         return f"{hours}:{minutes:02d}:{secs:02d}"
@@ -204,58 +219,86 @@ def format_duration(seconds):
     return f"{minutes}:{secs:02d}"
 
 
-def get_cookie_options():
+def find_cookie_file():
     """
-    Returns yt-dlp cookie options only when cookies.txt exists.
+    Finds Render Secret File or local cookies.txt.
     """
-    path = Path(COOKIE_FILE)
 
-    if path.exists() and path.is_file():
-        logger.info("Using cookie file: %s", path)
-        return {
-            "cookiefile": str(path),
-        }
+    possible = [
+        COOKIE_FILE,
+        "/etc/secrets/youtube_cookies.txt",
+        "/etc/secrets/cookies.txt",
+        "youtube_cookies.txt",
+        "cookies.txt",
+    ]
 
-    logger.info("No cookies.txt found. Continuing without cookies.")
-    return {}
+    for item in possible:
+        if not item:
+            continue
+
+        path = Path(item)
+
+        if path.exists() and path.is_file():
+            logger.info(
+                "YouTube cookies found: %s",
+                path
+            )
+            return str(path)
+
+    logger.warning(
+        "No YouTube cookies file found."
+    )
+
+    return None
 
 
 # ============================================================
 # YT-DLP OPTIONS
 # ============================================================
 
-def base_ydl_options():
+def ytdlp_options():
     options = {
         "quiet": True,
         "no_warnings": True,
-        "noplaylist": True,
-        "extract_flat": False,
 
-        # YouTube extraction.
+        "noplaylist": True,
+
+        "retries": 3,
+        "fragment_retries": 3,
+
+        "socket_timeout": 30,
+
+        "concurrent_fragment_downloads": 4,
+
         "format": (
             "bestaudio[ext=m4a]/"
             "bestaudio[ext=webm]/"
             "bestaudio/best"
         ),
 
-        "retries": 3,
-        "fragment_retries": 3,
-        "socket_timeout": 30,
-
-        "concurrent_fragment_downloads": 4,
-
         "http_headers": {
             "User-Agent": (
-                "Mozilla/5.0 (Linux; Android 13) "
+                "Mozilla/5.0 "
+                "(Linux; Android 13) "
                 "AppleWebKit/537.36 "
                 "(KHTML, like Gecko) "
                 "Chrome/131.0 Mobile Safari/537.36"
             ),
-            "Accept-Language": "en-US,en;q=0.9",
+
+            "Accept-Language":
+                "en-US,en;q=0.9",
+        },
+
+        # yt-dlp YouTube JS challenge support
+        "js_runtimes": {
+            "deno": {}
         },
     }
 
-    options.update(get_cookie_options())
+    cookie_file = find_cookie_file()
+
+    if cookie_file:
+        options["cookiefile"] = cookie_file
 
     return options
 
@@ -264,202 +307,166 @@ def base_ydl_options():
 # YOUTUBE INFO
 # ============================================================
 
-def extract_info_sync(url: str):
-    """
-    Extract YouTube metadata.
-    Runs in a worker thread so Telegram event loop isn't blocked.
-    """
+def extract_info_sync(url):
+    options = ytdlp_options()
 
-    options = base_ydl_options()
-
-    options.update(
-        {
-            "skip_download": True,
-        }
-    )
+    options["skip_download"] = True
 
     with yt_dlp.YoutubeDL(options) as ydl:
-        return ydl.extract_info(url, download=False)
-
-
-async def extract_info(url: str):
-    return await asyncio.to_thread(
-        extract_info_sync,
-        url,
-    )
-
-
-# ============================================================
-# AUDIO DOWNLOAD
-# ============================================================
-
-def download_audio_sync(url: str, output_dir: str):
-    """
-    Download best available audio and convert to MP3 using ffmpeg.
-    """
-
-    output_template = os.path.join(
-        output_dir,
-        "%(title).180B [%(id)s].%(ext)s",
-    )
-
-    options = base_ydl_options()
-
-    options.update(
-        {
-            "outtmpl": output_template,
-
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }
-            ],
-
-            "prefer_ffmpeg": True,
-
-            "keepvideo": False,
-        }
-    )
-
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=True)
-
-        title = info.get("title") or "Audio"
-        video_id = info.get("id") or "audio"
-
-        # Find resulting MP3.
-        files = list(Path(output_dir).glob("*.mp3"))
-
-        if not files:
-            # Fallback: search any downloaded media.
-            candidates = [
-                p
-                for p in Path(output_dir).iterdir()
-                if p.is_file()
-            ]
-
-            if candidates:
-                source = candidates[0]
-
-                mp3_path = Path(output_dir) / (
-                    f"{safe_filename(title)} [{video_id}].mp3"
-                )
-
-                subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-y",
-                        "-i",
-                        str(source),
-                        "-vn",
-                        "-codec:a",
-                        "libmp3lame",
-                        "-b:a",
-                        "192k",
-                        str(mp3_path),
-                    ],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-
-                files = [mp3_path]
-
-        if not files:
-            raise RuntimeError(
-                "Audio file was not created by yt-dlp/ffmpeg."
-            )
-
-        # Pick newest file.
-        files.sort(
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
+        return ydl.extract_info(
+            url,
+            download=False
         )
 
-        final_file = files[0]
 
-        return {
-            "title": title,
-            "path": str(final_file),
-            "duration": info.get("duration"),
-            "thumbnail": info.get("thumbnail"),
-            "id": video_id,
-        }
+async def extract_info(url):
+    return await asyncio.to_thread(
+        extract_info_sync,
+        url
+    )
 
 
-async def download_audio(url: str, output_dir: str):
+# ============================================================
+# DOWNLOAD
+# ============================================================
+
+def download_audio_sync(url, output_dir):
+
+    output_template = str(
+        Path(output_dir) /
+        "%(title).180B [%(id)s].%(ext)s"
+    )
+
+    options = ytdlp_options()
+
+    options.update({
+        "outtmpl": output_template,
+
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }
+        ],
+
+        "prefer_ffmpeg": True,
+        "keepvideo": False,
+    })
+
+    with yt_dlp.YoutubeDL(options) as ydl:
+
+        info = ydl.extract_info(
+            url,
+            download=True
+        )
+
+    title = info.get("title") or "Audio"
+    video_id = info.get("id") or "audio"
+
+    mp3_files = list(
+        Path(output_dir).glob("*.mp3")
+    )
+
+    if not mp3_files:
+
+        candidates = [
+            p
+            for p in Path(output_dir).iterdir()
+            if p.is_file()
+        ]
+
+        if candidates:
+
+            source = candidates[0]
+
+            output_mp3 = (
+                Path(output_dir) /
+                f"{safe_filename(title)} "
+                f"[{video_id}].mp3"
+            )
+
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(source),
+                    "-vn",
+                    "-codec:a",
+                    "libmp3lame",
+                    "-b:a",
+                    "192k",
+                    str(output_mp3),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            mp3_files = [output_mp3]
+
+    if not mp3_files:
+        raise RuntimeError(
+            "MP3 file was not created."
+        )
+
+    mp3_files.sort(
+        key=lambda p: p.stat().st_mtime,
+        reverse=True
+    )
+
+    final_file = mp3_files[0]
+
+    return {
+        "title": title,
+        "path": str(final_file),
+        "duration": info.get("duration"),
+        "thumbnail": info.get("thumbnail"),
+        "id": video_id,
+    }
+
+
+async def download_audio(url, output_dir):
     return await asyncio.to_thread(
         download_audio_sync,
         url,
-        output_dir,
+        output_dir
     )
 
 
 # ============================================================
-# TELEGRAM SAFE REPLY HELPERS
+# SAFE TELEGRAM REPLY
 # ============================================================
 
-async def reply_text(update: Update, text: str, **kwargs):
-    """
-    IMPORTANT:
-    Works for BOTH normal messages and callback queries.
-
-    This fixes:
-        AttributeError:
-        'NoneType' object has no attribute 'reply_text'
-    """
+async def reply_text(
+    update,
+    text,
+    **kwargs
+):
 
     if update.message is not None:
         return await update.message.reply_text(
             text,
-            **kwargs,
+            **kwargs
         )
 
-    if update.callback_query is not None:
-        query = update.callback_query
+    query = update.callback_query
 
-        if query.message is not None:
-            return await query.message.reply_text(
-                text,
-                **kwargs,
-            )
+    if query and query.message:
+        return await query.message.reply_text(
+            text,
+            **kwargs
+        )
 
     return None
 
 
-async def edit_text(update: Update, text: str, **kwargs):
-    """
-    Safely edit callback message.
-    """
+async def answer_callback(update):
 
     query = update.callback_query
 
-    if query is None:
-        return await reply_text(
-            update,
-            text,
-            **kwargs,
-        )
-
-    try:
-        await query.edit_message_text(
-            text,
-            **kwargs,
-        )
-    except Exception:
-        if query.message is not None:
-            return await query.message.reply_text(
-                text,
-                **kwargs,
-            )
-
-
-async def answer_callback(update: Update):
-    query = update.callback_query
-
-    if query is not None:
+    if query:
         try:
             await query.answer()
         except Exception:
@@ -467,313 +474,368 @@ async def answer_callback(update: Update):
 
 
 # ============================================================
-# HELP COMMAND
+# START
 # ============================================================
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "🎵 *Music Bot Help*\n\n"
-        "▶️ *Play*\n"
-        "Send a YouTube URL or use:\n"
-        "`/play <YouTube URL>`\n\n"
-        "📋 *Queue* — queued songs\n"
-        "🎵 *Now* — currently downloading song\n"
-        "⏭️ *Skip* — skip current song\n"
-        "⏹️ *Stop* — stop current job and clear queue\n"
-        "📊 *Status* — bot status\n\n"
-        "Example:\n"
-        "`/play https://youtu.be/VIDEO_ID`"
-    )
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await reply_text(
         update,
-        text,
-        parse_mode="Markdown",
-        reply_markup=main_keyboard(),
-    )
 
+        "🎵 *Resso Music Bot*\n\n"
+        "YouTube link bhejo aur main "
+        "audio download kar dunga.\n\n"
 
-# ============================================================
-# START COMMAND
-# ============================================================
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "🎵 *Welcome!*\n\n"
-        "YouTube se audio download karne ke liye "
-        "YouTube link bhejo.\n\n"
         "Example:\n"
         "`/play https://youtu.be/VIDEO_ID`\n\n"
-        "Neeche buttons bhi available hain 👇"
+
+        "Ya direct YouTube URL bhej do 👇",
+
+        parse_mode="Markdown",
+        reply_markup=main_keyboard()
     )
+
+
+# ============================================================
+# HELP
+# ============================================================
+
+async def help_command(
+    update,
+    context
+):
 
     await reply_text(
         update,
-        text,
+
+        "ℹ️ *Help*\n\n"
+
+        "🎵 `/play <YouTube URL>`\n"
+        "YouTube audio download karega.\n\n"
+
+        "📋 `/queue` — Queue\n"
+        "🎵 `/now` — Current song\n"
+        "⏭️ `/skip` — Skip\n"
+        "⏹️ `/stop` — Stop + clear queue\n"
+        "📊 `/status` — Bot status\n\n"
+
+        "Direct YouTube URL bhi bhej sakte ho.",
+
         parse_mode="Markdown",
-        reply_markup=main_keyboard(),
+        reply_markup=main_keyboard()
     )
 
 
 # ============================================================
-# PLAY COMMAND
+# PLAY
 # ============================================================
 
-async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def play_command(
+    update,
+    context
+):
+
     if not context.args:
+
         await reply_text(
             update,
+
             "❌ YouTube URL do.\n\n"
             "Example:\n"
             "`/play https://youtu.be/VIDEO_ID`",
-            parse_mode="Markdown",
+
+            parse_mode="Markdown"
         )
+
         return
 
-    url = clean_url(context.args[0])
+    url = clean_url(
+        context.args[0]
+    )
 
     if not is_youtube_url(url):
+
         await reply_text(
             update,
-            "❌ Ye valid YouTube URL nahi lag raha."
+            "❌ Valid YouTube URL nahi hai."
         )
+
         return
 
-    await add_song_to_queue(
+    await add_song(
         update,
-        url,
+        url
     )
 
 
 # ============================================================
-# URL MESSAGE HANDLER
+# DIRECT URL
 # ============================================================
 
-async def url_message_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+async def url_handler(
+    update,
+    context
 ):
-    if update.message is None:
+
+    if not update.message:
         return
 
-    text = (update.message.text or "").strip()
-
-    if not text:
-        return
+    text = (
+        update.message.text or ""
+    ).strip()
 
     if not is_youtube_url(text):
         return
 
-    url = clean_url(text)
-
-    await add_song_to_queue(
+    await add_song(
         update,
-        url,
+        clean_url(text)
     )
 
 
 # ============================================================
-# ADD SONG TO QUEUE
+# ADD SONG
 # ============================================================
 
-async def add_song_to_queue(
-    update: Update,
-    url: str,
+async def add_song(
+    update,
+    url
 ):
-    user = update.effective_user
 
-    requester = (
-        user.full_name
-        if user is not None
-        else "Unknown"
-    )
-
-    status_message = await reply_text(
+    status = await reply_text(
         update,
-        "🔎 Getting YouTube information..."
+        "🔎 YouTube information fetch ho rahi hai..."
     )
 
     try:
+
         info = await extract_info(url)
 
-        title = info.get("title") or "Unknown"
+        title = (
+            info.get("title")
+            or "Unknown"
+        )
 
         duration = format_duration(
             info.get("duration")
         )
 
-        song = Song(
-            url=url,
-            title=title,
-            requester=requester,
-            status="queued",
+        user = update.effective_user
+
+        requester = (
+            user.full_name
+            if user
+            else "Unknown"
         )
 
         chat = update.effective_chat
 
-        if chat is None:
+        if not chat:
             return
 
         chat_id = chat.id
 
-        async with queue_lock:
-            user_queue = queues[chat_id]
+        song = Song(
+            url=url,
+            title=title,
+            requester=requester
+        )
 
-            was_empty = (
-                user_queue.current is None
-                and len(user_queue.items) == 0
+        async with queue_lock:
+
+            q = queues[chat_id]
+
+            empty = (
+                q["current"] is None
+                and len(q["items"]) == 0
             )
 
-            user_queue.items.append(song)
+            q["items"].append(song)
+
+            position = len(q["items"])
 
         text = (
             "✅ *Added to queue*\n\n"
-            f"🎵 *{title}*\n"
+            f"🎵 {title}\n"
             f"⏱️ {duration}\n"
             f"👤 {requester}\n"
         )
 
-        if was_empty:
-            text += "\n⏳ Starting download..."
+        if empty:
+            text += "\n⏳ Download starting..."
         else:
-            text += (
-                f"\n📋 Position: "
-                f"{len(queues[chat_id].items)}"
-            )
+            text += f"\n📋 Position: {position}"
 
-        if status_message is not None:
+        if status:
+
             try:
-                await status_message.edit_text(
+
+                await status.edit_text(
                     text,
                     parse_mode="Markdown",
-                    reply_markup=main_keyboard(),
+                    reply_markup=main_keyboard()
                 )
+
             except Exception:
                 pass
 
-        # Start queue worker if needed.
         if chat_id not in active_tasks:
+
             task = asyncio.create_task(
                 process_queue(
                     chat_id,
-                    update.get_bot(),
+                    update.get_bot()
                 )
             )
 
             active_tasks[chat_id] = task
 
-            def cleanup(_task):
-                active_tasks.pop(chat_id, None)
+            def cleanup(_):
+                active_tasks.pop(
+                    chat_id,
+                    None
+                )
 
-            task.add_done_callback(cleanup)
+            task.add_done_callback(
+                cleanup
+            )
 
     except Exception as exc:
+
         logger.exception(
-            "Failed to add song: %s",
-            exc,
+            "YouTube information error"
         )
 
-        error_text = (
-            "❌ *YouTube information fetch failed.*\n\n"
-            f"Technical error:\n`{str(exc)[:1000]}`"
-        )
+        error = str(exc)
 
-        if status_message is not None:
+        if (
+            "Sign in to confirm" in error
+            or "cookies" in error.lower()
+        ):
+
+            message = (
+                "❌ *YouTube authentication required.*\n\n"
+                "Render mein valid YouTube cookies "
+                "Secret File ke roop mein set karo.\n\n"
+                "Cookies file milne ke baad dobara try karo."
+            )
+
+        else:
+
+            message = (
+                "❌ *YouTube information fetch failed.*\n\n"
+                f"`{error[:1200]}`"
+            )
+
+        if status:
+
             try:
-                await status_message.edit_text(
-                    error_text,
+
+                await status.edit_text(
+                    message,
                     parse_mode="Markdown",
-                    reply_markup=main_keyboard(),
+                    reply_markup=main_keyboard()
                 )
+
             except Exception:
                 await reply_text(
                     update,
-                    error_text,
-                    parse_mode="Markdown",
+                    message,
+                    parse_mode="Markdown"
                 )
-        else:
-            await reply_text(
-                update,
-                error_text,
-                parse_mode="Markdown",
-            )
 
 
 # ============================================================
 # QUEUE WORKER
 # ============================================================
 
-async def process_queue(chat_id: int, bot):
-    """
-    Processes one chat's queue at a time.
-    """
+async def process_queue(
+    chat_id,
+    bot
+):
 
-    stop_event = asyncio.Event()
     skip_event = asyncio.Event()
+    stop_event = asyncio.Event()
 
-    stop_events[chat_id] = stop_event
     skip_events[chat_id] = skip_event
+    stop_events[chat_id] = stop_event
 
     try:
+
         while True:
 
             async with queue_lock:
-                user_queue = queues[chat_id]
 
-                if not user_queue.items:
-                    user_queue.current = None
+                q = queues[chat_id]
+
+                if not q["items"]:
+
+                    q["current"] = None
                     break
 
-                song = user_queue.items.popleft()
-                song.status = "downloading"
-                user_queue.current = song
+                song = q["items"].popleft()
 
-                # Reset skip state for this song.
+                song.status = "downloading"
+
+                q["current"] = song
+
                 skip_event.clear()
                 stop_event.clear()
 
             temp_dir = tempfile.mkdtemp(
-                prefix=f"yt_{chat_id}_"
+                prefix="resso_"
             )
 
+            progress = None
+
             try:
+
                 await bot.send_chat_action(
                     chat_id=chat_id,
-                    action=ChatAction.UPLOAD_DOCUMENT,
+                    action=ChatAction.UPLOAD_DOCUMENT
                 )
 
-                progress_message = await bot.send_message(
+                progress = await bot.send_message(
                     chat_id=chat_id,
+
                     text=(
                         "⏳ *Downloading...*\n\n"
                         f"🎵 {song.title}"
                     ),
+
                     parse_mode="Markdown",
-                    reply_markup=main_keyboard(),
+                    reply_markup=main_keyboard()
                 )
 
                 result = await download_audio(
                     song.url,
-                    temp_dir,
+                    temp_dir
                 )
 
                 if skip_event.is_set():
-                    try:
-                        await progress_message.edit_text(
-                            "⏭️ Skipped."
-                        )
-                    except Exception:
-                        pass
+
+                    if progress:
+                        try:
+                            await progress.edit_text(
+                                "⏭️ Skipped."
+                            )
+                        except Exception:
+                            pass
 
                     continue
 
                 if stop_event.is_set():
-                    try:
-                        await progress_message.edit_text(
-                            "⏹️ Stopped."
-                        )
-                    except Exception:
-                        pass
+
+                    if progress:
+                        try:
+                            await progress.edit_text(
+                                "⏹️ Stopped."
+                            )
+                        except Exception:
+                            pass
 
                     break
 
@@ -782,35 +844,52 @@ async def process_queue(chat_id: int, bot):
                 )
 
                 if not file_path.exists():
-                    raise FileNotFoundError(
-                        "Downloaded audio file not found."
+                    raise RuntimeError(
+                        "Downloaded file not found."
                     )
 
-                file_size = file_path.stat().st_size
+                size = file_path.stat().st_size
 
-                if file_size > MAX_FILE_SIZE:
+                if size > MAX_FILE_SIZE:
+
                     await bot.send_message(
                         chat_id=chat_id,
+
                         text=(
-                            "❌ File is too large for Telegram.\n\n"
+                            "❌ File Telegram limit "
+                            "se bada hai.\n\n"
                             f"Size: "
-                            f"{file_size / 1024 / 1024:.1f} MB"
+                            f"{size / 1024 / 1024:.1f} MB"
                         ),
+
+                        reply_markup=main_keyboard()
                     )
+
                     continue
 
-                await progress_message.edit_text(
-                    (
-                        "📤 *Uploading...*\n\n"
-                        f"🎵 {result['title']}"
-                    ),
-                    parse_mode="Markdown",
-                )
+                if progress:
 
-                with open(file_path, "rb") as audio_file:
+                    try:
+
+                        await progress.edit_text(
+                            (
+                                "📤 *Uploading...*\n\n"
+                                f"🎵 {result['title']}"
+                            ),
+                            parse_mode="Markdown"
+                        )
+
+                    except Exception:
+                        pass
+
+                with open(
+                    file_path,
+                    "rb"
+                ) as audio:
+
                     await bot.send_audio(
                         chat_id=chat_id,
-                        audio=audio_file,
+                        audio=audio,
                         title=result["title"][:64],
                         duration=(
                             int(result["duration"])
@@ -819,397 +898,435 @@ async def process_queue(chat_id: int, bot):
                         ),
                         caption=(
                             f"🎵 {result['title']}\n"
-                            f"🤖 Downloaded by Music Bot"
-                        ),
+                            f"🤖 Resso Music Bot"
+                        )
                     )
 
-                try:
-                    await progress_message.delete()
-                except Exception:
-                    pass
+                if progress:
+
+                    try:
+                        await progress.delete()
+                    except Exception:
+                        pass
 
             except Exception as exc:
+
                 logger.exception(
-                    "Queue download failed for %s: %s",
-                    chat_id,
-                    exc,
+                    "Download failed"
                 )
 
                 if skip_event.is_set():
+
                     await bot.send_message(
                         chat_id=chat_id,
                         text="⏭️ Current song skipped.",
-                        reply_markup=main_keyboard(),
+                        reply_markup=main_keyboard()
                     )
 
                 elif stop_event.is_set():
+
                     await bot.send_message(
                         chat_id=chat_id,
                         text="⏹️ Download stopped.",
-                        reply_markup=main_keyboard(),
+                        reply_markup=main_keyboard()
                     )
+
                     break
 
                 else:
+
+                    error = str(exc)
+
+                    if (
+                        "Sign in to confirm" in error
+                        or "cookies" in error.lower()
+                    ):
+
+                        text = (
+                            "❌ *YouTube authentication failed.*\n\n"
+                            "Cookies check karo.\n\n"
+                            f"`{error[:1000]}`"
+                        )
+
+                    else:
+
+                        text = (
+                            "❌ *Download failed.*\n\n"
+                            f"🎵 {song.title}\n\n"
+                            f"`{error[:1200]}`"
+                        )
+
                     await bot.send_message(
                         chat_id=chat_id,
-                        text=(
-                            "❌ *YouTube download failed.*\n\n"
-                            f"🎵 {song.title}\n\n"
-                            "ℹ️ Technical error:\n"
-                            f"`{str(exc)[:1200]}`"
-                        ),
+                        text=text,
                         parse_mode="Markdown",
-                        reply_markup=main_keyboard(),
+                        reply_markup=main_keyboard()
                     )
 
             finally:
+
                 shutil.rmtree(
                     temp_dir,
-                    ignore_errors=True,
+                    ignore_errors=True
                 )
 
                 async with queue_lock:
-                    queues[chat_id].current = None
+                    queues[chat_id]["current"] = None
 
         await bot.send_message(
             chat_id=chat_id,
             text="✅ Queue finished.",
-            reply_markup=main_keyboard(),
+            reply_markup=main_keyboard()
         )
 
     except asyncio.CancelledError:
+
         logger.info(
-            "Queue task cancelled: %s",
-            chat_id,
+            "Queue cancelled: %s",
+            chat_id
         )
+
         raise
 
     finally:
-        stop_events.pop(chat_id, None)
-        skip_events.pop(chat_id, None)
+
+        skip_events.pop(
+            chat_id,
+            None
+        )
+
+        stop_events.pop(
+            chat_id,
+            None
+        )
 
         async with queue_lock:
-            queues[chat_id].current = None 
+            queues[chat_id]["current"] = None
 
- # ============================================================
-# QUEUE COMMAND
+
+# ============================================================
+# QUEUE
 # ============================================================
 
 async def queue_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context
 ):
+
     chat = update.effective_chat
 
-    if chat is None:
+    if not chat:
         return
 
-    chat_id = chat.id
-
     async with queue_lock:
-        user_queue = queues[chat_id]
 
-        current = user_queue.current
-        pending = list(user_queue.items)
+        q = queues[chat.id]
+
+        current = q["current"]
+
+        pending = list(
+            q["items"]
+        )
 
     lines = ["📋 *Queue*\n"]
 
-    if current is not None:
+    if current:
+
         lines.append(
-            f"🎵 *Now downloading:*\n"
+            f"🎵 *Now:*\n"
             f"{current.title}\n"
         )
 
     if pending:
-        lines.append("\n⏳ *Waiting:*\n")
 
-        for index, song in enumerate(pending, start=1):
+        lines.append(
+            "\n⏳ *Waiting:*\n"
+        )
+
+        for i, song in enumerate(
+            pending,
+            1
+        ):
+
             lines.append(
-                f"{index}. {song.title}"
+                f"{i}. {song.title}"
             )
-    elif current is None:
-        lines.append("Queue empty.")
+
+    elif not current:
+
+        lines.append(
+            "Queue empty."
+        )
 
     await reply_text(
         update,
         "\n".join(lines),
         parse_mode="Markdown",
-        reply_markup=main_keyboard(),
+        reply_markup=main_keyboard()
     )
 
 
 # ============================================================
-# NOW COMMAND
+# NOW
 # ============================================================
 
 async def now_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context
 ):
+
     chat = update.effective_chat
 
-    if chat is None:
+    if not chat:
         return
 
-    chat_id = chat.id
-
     async with queue_lock:
-        current = queues[chat_id].current
 
-    if current is None:
+        current = queues[
+            chat.id
+        ]["current"]
+
+    if not current:
+
         await reply_text(
             update,
-            "🎵 Nothing is downloading right now.",
-            reply_markup=main_keyboard(),
+            "🎵 Nothing is downloading.",
+            reply_markup=main_keyboard()
         )
+
         return
 
     await reply_text(
         update,
+
         (
-            "🎵 *Now downloading*\n\n"
+            "🎵 *Now Downloading*\n\n"
             f"🎶 {current.title}\n"
             f"👤 {current.requester}\n"
-            f"📌 Status: {current.status}"
+            f"📌 {current.status}"
         ),
+
         parse_mode="Markdown",
-        reply_markup=main_keyboard(),
+        reply_markup=main_keyboard()
     )
 
 
 # ============================================================
-# STATUS COMMAND
+# STATUS
 # ============================================================
 
 async def status_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context
 ):
-    """
-    IMPORTANT:
-    This function never directly assumes update.message exists.
-
-    Callback buttons use update.callback_query, so reply_text()
-    above safely handles both cases.
-    """
 
     chat = update.effective_chat
 
-    total_queued = 0
-    current_title = "Nothing"
+    waiting = 0
+    current = "Nothing"
 
-    if chat is not None:
+    if chat:
+
         async with queue_lock:
-            user_queue = queues[chat.id]
 
-            total_queued = len(user_queue.items)
+            q = queues[chat.id]
 
-            if user_queue.current is not None:
-                current_title = (
-                    user_queue.current.title
-                )
+            waiting = len(
+                q["items"]
+            )
 
-    active_count = len(active_tasks)
+            if q["current"]:
+                current = q[
+                    "current"
+                ].title
 
     text = (
         "📊 *Bot Status*\n\n"
         "🟢 Bot: Online\n"
-        f"⚙️ Active queues: {active_count}\n"
-        f"📋 Waiting songs: {total_queued}\n"
-        f"🎵 Current: {current_title}"
+        f"⚙️ Active queues: "
+        f"{len(active_tasks)}\n"
+        f"📋 Waiting: {waiting}\n"
+        f"🎵 Current: {current}"
     )
 
     await reply_text(
         update,
         text,
         parse_mode="Markdown",
-        reply_markup=main_keyboard(),
+        reply_markup=main_keyboard()
     )
 
 
 # ============================================================
-# SKIP COMMAND
+# SKIP
 # ============================================================
 
 async def skip_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context
 ):
+
     chat = update.effective_chat
 
-    if chat is None:
+    if not chat:
         return
-
-    chat_id = chat.id
 
     async with queue_lock:
-        current = queues[chat_id].current
 
-    if current is None:
+        current = queues[
+            chat.id
+        ]["current"]
+
+    if not current:
+
         await reply_text(
             update,
-            "⏭️ Nothing is currently downloading.",
-            reply_markup=main_keyboard(),
+            "⏭️ Nothing is downloading.",
+            reply_markup=main_keyboard()
         )
+
         return
 
-    event = skip_events.get(chat_id)
+    event = skip_events.get(
+        chat.id
+    )
 
-    if event is not None:
+    if event:
         event.set()
 
     await reply_text(
         update,
+
         (
-            "⏭️ *Skip requested.*\n\n"
+            "⏭️ *Skip requested*\n\n"
             f"🎵 {current.title}"
         ),
+
         parse_mode="Markdown",
-        reply_markup=main_keyboard(),
+        reply_markup=main_keyboard()
     )
 
 
 # ============================================================
-# STOP COMMAND
+# STOP
 # ============================================================
 
 async def stop_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context
 ):
+
     chat = update.effective_chat
 
-    if chat is None:
+    if not chat:
         return
 
-    chat_id = chat.id
-
     async with queue_lock:
-        user_queue = queues[chat_id]
 
-        had_current = user_queue.current is not None
-        waiting_count = len(user_queue.items)
+        q = queues[chat.id]
 
-        user_queue.items.clear()
+        had_current = (
+            q["current"] is not None
+        )
 
-    event = stop_events.get(chat_id)
+        waiting = len(
+            q["items"]
+        )
 
-    if event is not None:
+        q["items"].clear()
+
+    event = stop_events.get(
+        chat.id
+    )
+
+    if event:
         event.set()
 
-    if not had_current and waiting_count == 0:
+    if not had_current and waiting == 0:
+
         await reply_text(
             update,
-            "⏹️ Nothing to stop. Queue is already empty.",
-            reply_markup=main_keyboard(),
+            "⏹️ Queue already empty.",
+            reply_markup=main_keyboard()
         )
+
         return
 
     await reply_text(
         update,
-        (
-            "⏹️ *Stopped.*\n\n"
-            "Current download will stop and "
-            "the waiting queue has been cleared."
-        ),
+
+        "⏹️ *Stopped.*\n\n"
+        "Waiting queue cleared.",
+
         parse_mode="Markdown",
-        reply_markup=main_keyboard(),
+        reply_markup=main_keyboard()
     )
 
 
 # ============================================================
-# CALLBACK BUTTON HANDLER
+# CALLBACKS
 # ============================================================
 
 async def callbacks(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context
 ):
+
     query = update.callback_query
 
-    if query is None:
+    if not query:
         return
 
-    await answer_callback(update)
-
-    data = query.data or ""
-
-    logger.info(
-        "Callback received: %s",
-        data,
+    await answer_callback(
+        update
     )
 
-    # --------------------------------------------------------
-    # HELP
-    # --------------------------------------------------------
+    data = query.data
 
-    if data in ("help", "help_play"):
+    if data in (
+        "help",
+        "help_play"
+    ):
+
         await help_command(
             update,
-            context,
+            context
         )
-        return
 
-    # --------------------------------------------------------
-    # QUEUE
-    # --------------------------------------------------------
+    elif data == "queue":
 
-    if data == "queue":
         await queue_command(
             update,
-            context,
+            context
         )
-        return
 
-    # --------------------------------------------------------
-    # NOW
-    # --------------------------------------------------------
+    elif data == "now":
 
-    if data == "now":
         await now_command(
             update,
-            context,
+            context
         )
-        return
 
-    # --------------------------------------------------------
-    # STATUS
-    # --------------------------------------------------------
+    elif data == "status":
 
-    if data == "status":
         await status_command(
             update,
-            context,
+            context
         )
-        return
 
-    # --------------------------------------------------------
-    # SKIP
-    # --------------------------------------------------------
+    elif data == "skip":
 
-    if data == "skip":
         await skip_command(
             update,
-            context,
+            context
         )
-        return
 
-    # --------------------------------------------------------
-    # STOP
-    # --------------------------------------------------------
+    elif data == "stop":
 
-    if data == "stop":
         await stop_command(
             update,
-            context,
+            context
         )
-        return
-
-    logger.warning(
-        "Unknown callback: %s",
-        data,
-    )
 
 
 # ============================================================
@@ -1217,69 +1334,56 @@ async def callbacks(
 # ============================================================
 
 async def error_handler(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context
 ):
-    """
-    Global Telegram error handler.
-
-    This also prevents the:
-        No error handlers are registered
-    message.
-    """
 
     logger.error(
-        "Unhandled Telegram exception",
-        exc_info=context.error,
+        "Unhandled Telegram error",
+        exc_info=context.error
     )
 
-    error = context.error
 
-    # Don't crash the bot because a message/callback failed.
+# ============================================================
+# POST INIT
+# ============================================================
+
+async def post_init(
+    application
+):
+
     try:
-        if isinstance(update, Update):
-            if update.callback_query is not None:
-                try:
-                    await update.callback_query.answer(
-                        "⚠️ Something went wrong.",
-                        show_alert=False,
-                    )
-                except Exception:
-                    pass
+
+        await application.bot.set_my_commands([
+            ("start", "Start bot"),
+            ("play", "Download YouTube audio"),
+            ("queue", "Show queue"),
+            ("now", "Current download"),
+            ("skip", "Skip current"),
+            ("stop", "Stop queue"),
+            ("status", "Bot status"),
+            ("help", "Help"),
+        ])
+
+        logger.info(
+            "Bot commands registered."
+        )
 
     except Exception:
+
         logger.exception(
-            "Error while handling error callback"
+            "Command registration failed."
         )
 
 
 # ============================================================
-# COMMAND LIST
-# ============================================================
-
-async def set_commands(
-    application: Application,
-):
-    await application.bot.set_my_commands(
-        [
-            ("start", "Start the bot"),
-            ("play", "Download YouTube audio"),
-            ("queue", "Show queue"),
-            ("now", "Show current download"),
-            ("skip", "Skip current song"),
-            ("stop", "Stop and clear queue"),
-            ("status", "Show bot status"),
-            ("help", "Show help"),
-        ]
-    )
-
-
-# ============================================================
-# APPLICATION STARTUP
+# BUILD BOT
 # ============================================================
 
 def build_application():
+
     if not BOT_TOKEN:
+
         raise RuntimeError(
             "BOT_TOKEN environment variable is missing."
         )
@@ -1287,72 +1391,69 @@ def build_application():
     application = (
         Application.builder()
         .token(BOT_TOKEN)
+        .post_init(post_init)
         .build()
     )
 
-    # --------------------------------------------------------
-    # COMMANDS
-    # --------------------------------------------------------
+    # Commands
 
     application.add_handler(
         CommandHandler(
             "start",
-            start_command,
+            start_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "play",
-            play_command,
+            play_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "queue",
-            queue_command,
+            queue_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "now",
-            now_command,
+            now_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "skip",
-            skip_command,
+            skip_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "stop",
-            stop_command,
+            stop_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "status",
-            status_command,
+            status_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "help",
-            help_command,
+            help_command
         )
     )
 
-    # --------------------------------------------------------
-    # INLINE BUTTONS
-    # --------------------------------------------------------
+    # Buttons
 
     application.add_handler(
         CallbackQueryHandler(
@@ -1360,21 +1461,16 @@ def build_application():
         )
     )
 
-    # --------------------------------------------------------
-    # YOUTUBE URL MESSAGES
-    # --------------------------------------------------------
+    # YouTube URL
 
     application.add_handler(
         MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
-            url_message_handler,
+            filters.TEXT & ~filters.COMMAND,
+            url_handler
         )
     )
 
-    # --------------------------------------------------------
-    # GLOBAL ERROR HANDLER
-    # --------------------------------------------------------
+    # Errors
 
     application.add_error_handler(
         error_handler
@@ -1388,60 +1484,62 @@ def build_application():
 # ============================================================
 
 def main():
+
     logger.info(
-        "Starting Telegram bot..."
+        "================================"
     )
 
-    # Start Flask health server for Render.
+    logger.info(
+        "Starting Resso Music Bot"
+    )
+
+    logger.info(
+        "================================"
+    )
+
+    # Health server
+
     flask_thread = threading.Thread(
         target=run_flask,
-        daemon=True,
-        name="flask-health-server",
+        daemon=True
     )
 
     flask_thread.start()
 
     logger.info(
         "Flask health server started on port %s",
-        PORT,
+        PORT
     )
+
+    # Check cookies
+
+    cookie = find_cookie_file()
+
+    if cookie:
+        logger.info(
+            "YouTube authentication: ENABLED"
+        )
+    else:
+        logger.warning(
+            "YouTube authentication: NO COOKIES"
+        )
+
+    # Telegram
 
     application = build_application()
 
     logger.info(
-        "Telegram application starting..."
-    )
-
-    # post_init is used for setting bot commands.
-    async def post_init(
-        app_instance: Application,
-    ):
-        try:
-            await set_commands(
-                app_instance
-            )
-            logger.info(
-                "Bot commands registered."
-            )
-        except Exception:
-            logger.exception(
-                "Could not register bot commands."
-            )
-
-    application.post_init = post_init
-
-    logger.info(
-        "Bot is now polling."
+        "Telegram polling starting..."
     )
 
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
+        drop_pending_updates=True
     )
 
 
 # ============================================================
-# ENTRY POINT
+# ENTRY
 # ============================================================
 
 if __name__ == "__main__":
